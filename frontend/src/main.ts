@@ -52,44 +52,6 @@ function pennant(color: number): string {
   return px.map((v) => v.toString(16)).join("");
 }
 
-const PALETTE_RGB = PALETTE.map((c) => (c ? [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)) : null));
-
-// Closest palette entry (1..15) by perceptually weighted distance; transparent pixels stay 0.
-function nearestPalette(r: number, g: number, b: number, a: number): number {
-  if (a < 128) return 0;
-  let best = 1;
-  let bestD = Infinity;
-  for (let i = 1; i < PALETTE_RGB.length; i++) {
-    const [pr, pg, pb] = PALETTE_RGB[i]!;
-    const d = 0.3 * (r - pr) ** 2 + 0.59 * (g - pg) ** 2 + 0.11 * (b - pb) ** 2;
-    if (d < bestD) { bestD = d; best = i; }
-  }
-  return best;
-}
-
-// Turns any image into 16x16 palette pixels, entirely in the browser (nothing is uploaded).
-async function pixelate(file: File): Promise<number[]> {
-  const bmp = await createImageBitmap(file);
-  const side = Math.min(bmp.width, bmp.height); // centered square crop
-  const sx = (bmp.width - side) / 2;
-  const sy = (bmp.height - side) / 2;
-  // Two steps (-> 64 -> 16) so big photos are averaged instead of aliased.
-  const step = (size: number, src: CanvasImageSource, ...crop: number[]) => {
-    const c = document.createElement("canvas");
-    c.width = c.height = size;
-    const g = c.getContext("2d", { willReadFrequently: true })!;
-    g.imageSmoothingQuality = "high";
-    if (crop.length) g.drawImage(src, crop[0], crop[1], crop[2], crop[3], 0, 0, size, size);
-    else g.drawImage(src, 0, 0, size, size);
-    return { c, g };
-  };
-  const mid = step(64, bmp, sx, sy, side, side);
-  const small = step(16, mid.c);
-  bmp.close();
-  const d = small.g.getImageData(0, 0, 16, 16).data;
-  return Array.from({ length: 256 }, (_, i) => nearestPalette(d[i * 4], d[i * 4 + 1], d[i * 4 + 2], d[i * 4 + 3]));
-}
-
 function paintPixels(target: CanvasRenderingContext2D, hex: string) {
   target.clearRect(0, 0, 16, 16);
   for (let i = 0; i < 256; i++) {
@@ -229,20 +191,6 @@ pixelsEl.addEventListener("pointerdown", (e) => {
 pixelsEl.addEventListener("pointermove", (e) => {
   if (e.buttons & 1) paint(e);
 });
-
-const importFile = document.querySelector<HTMLInputElement>("#import-file")!;
-document.querySelector<HTMLButtonElement>("#import")!.onclick = () => importFile.click();
-importFile.onchange = async () => {
-  const file = importFile.files?.[0];
-  importFile.value = ""; // allow picking the same file again
-  if (!file) return;
-  try {
-    editing = await pixelate(file);
-    paintPixels(pctx, editing.map((v) => v.toString(16)).join(""));
-  } catch {
-    // not a decodable image: leave the drawing as it was
-  }
-};
 
 flagBtn.onclick = () => {
   if (!myPixels) return;
