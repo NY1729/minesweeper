@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,5 +39,15 @@ func TestRateLimitsSurviveReconnect(t *testing.T) {
 	}
 	if !r.allow("act:bob", 6, 12) {
 		t.Fatal("other users are unaffected")
+	}
+}
+
+func TestPixelsRe(t *testing.T) {
+	ok := func(s string) bool { return pixelsRe.MatchString(s) }
+	if !ok(strings.Repeat("a", 256)) || !ok(strings.Repeat("v", 256)) || !ok(strings.Repeat("0", 256)) {
+		t.Fatal("palette indices 0-31 must be accepted")
+	}
+	if ok(strings.Repeat("w", 256)) || ok(strings.Repeat("A", 256)) || ok(strings.Repeat("a", 255)) || ok(strings.Repeat("a", 257)) {
+		t.Fatal("out of range indices and wrong lengths must be rejected")
 	}
 }

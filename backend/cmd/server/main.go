@@ -143,8 +143,9 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// 16x16 pixels, one hex digit (palette index) each.
-var pixelsRe = regexp.MustCompile(`^[0-9a-f]{256}$`)
+// 16x16 pixels, one base-36 digit (palette index 0-31) each. 0-9a-f are the original 16
+// colors, so flags saved before the palette grew stay valid.
+var pixelsRe = regexp.MustCompile(`^[0-9a-v]{256}$`)
 var userIDRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 const maxNameRunes = 16

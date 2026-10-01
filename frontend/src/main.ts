@@ -24,7 +24,6 @@ type ServerMessage =
 
 const canvas = document.querySelector<HTMLCanvasElement>("#board")!;
 const ctx = canvas.getContext("2d")!;
-const dotEl = document.querySelector<HTMLElement>("#dot")!;
 const flagBtn = document.querySelector<HTMLButtonElement>("#flag-btn")!;
 const flagPreview = document.querySelector<HTMLImageElement>("#flag-preview")!;
 const editor = document.querySelector<HTMLDialogElement>("#editor")!;
@@ -38,11 +37,15 @@ const tipFlag = document.querySelector<HTMLCanvasElement>("#tip-flag")!;
 const tipName = document.querySelector<HTMLElement>("#tip-name")!;
 const rankMe = document.querySelector<HTMLElement>("#rank-me")!;
 
-// Flags are 16x16 pixels, each a palette index stored as one hex digit (256 chars total).
-// Index 0 is transparent. Changing existing entries recolors every saved flag.
+// Flags are 16x16 pixels, each a palette index stored as one base-36 digit (256 chars total,
+// so up to 36 entries; the server accepts 0-31). Index 0 is transparent.
+// Never change or reorder existing entries (that recolors every saved flag); only append.
 const PALETTE = [
   "", "#1f2533", "#ffffff", "#8a90a0", "#e0434f", "#f28c28", "#f4c430", "#a8d84e",
   "#2e9e57", "#13958c", "#7cc6f2", "#2f6fdf", "#6a4fd1", "#d94fa3", "#ffb3c1", "#8b5a2b",
+  // added later: shades and skin tones
+  "#4a4f5c", "#c9cedb", "#8f1d2c", "#ff9e9e", "#c76a12", "#ffd99a", "#d9a066", "#fff1a8",
+  "#5a7d1e", "#b8ecc8", "#1b5e3a", "#0b5c63", "#1c3d8f", "#b9cdfa", "#3a2a6b", "#c9b8f5",
 ];
 
 function pennant(color: number): string {
@@ -52,13 +55,13 @@ function pennant(color: number): string {
     const w = (4 - Math.abs(i - 4)) * 2 + 1;
     for (let x = 0; x < w; x++) px[(2 + i) * 16 + 5 + x] = color;
   }
-  return px.map((v) => v.toString(16)).join("");
+  return px.map((v) => v.toString(36)).join("");
 }
 
 function paintPixels(target: CanvasRenderingContext2D, hex: string) {
   target.clearRect(0, 0, 16, 16);
   for (let i = 0; i < 256; i++) {
-    const c = PALETTE[parseInt(hex[i], 16)];
+    const c = PALETTE[parseInt(hex[i], 36)];
     if (!c) continue;
     target.fillStyle = c;
     target.fillRect(i % 16, Math.floor(i / 16), 1, 1);
@@ -185,7 +188,7 @@ function paint(e: PointerEvent) {
   const y = Math.floor(((e.clientY - r.top) / r.height) * 16);
   if (x < 0 || y < 0 || x > 15 || y > 15) return;
   editing[y * 16 + x] = brush;
-  paintPixels(pctx, editing.map((v) => v.toString(16)).join(""));
+  paintPixels(pctx, editing.map((v) => v.toString(36)).join(""));
 }
 pixelsEl.addEventListener("pointerdown", (e) => {
   pixelsEl.setPointerCapture(e.pointerId);
@@ -197,7 +200,7 @@ pixelsEl.addEventListener("pointermove", (e) => {
 
 flagBtn.onclick = () => {
   if (!myPixels) return;
-  editing = [...myPixels].map((ch) => parseInt(ch, 16));
+  editing = [...myPixels].map((ch) => parseInt(ch, 36));
   paintPixels(pctx, myPixels);
   nameEl.value = myName;
   renderPalette();
@@ -207,17 +210,11 @@ flagBtn.onclick = () => {
 
 editor.addEventListener("close", () => {
   if (editor.returnValue !== "save") return;
-  const hex = editing.map((v) => v.toString(16)).join("");
+  const hex = editing.map((v) => v.toString(36)).join("");
   setUser(myId, hex, nameEl.value.trim().slice(0, 16));
   saveProfile();
   draw();
 });
-
-function setStatus(text: string, state: "ok" | "wait" | "err") {
-  dotEl.dataset.state = state;
-  dotEl.title = text;
-  dotEl.setAttribute("aria-label", text);
-}
 
 let hover: { x: number; y: number } | null = null;
 let pointer = { x: 0, y: 0 };
@@ -309,12 +306,10 @@ function wsUrl(): string {
 
 function connect() {
   clearTimeout(reconnectTimer);
-  setStatus("connecting…", "wait");
 
   socket = new WebSocket(wsUrl());
 
   socket.addEventListener("open", () => {
-    setStatus("online", "ok");
     send({ type: "auth", secret });
     send({ type: "ranking" });
     sentCursor = "";
@@ -422,14 +417,10 @@ function connect() {
   });
 
   socket.addEventListener("close", () => {
-    setStatus("offline — reconnecting", "wait");
     socket = null;
     reconnectTimer = window.setTimeout(connect, 1500);
   });
 
-  socket.addEventListener("error", () => {
-    setStatus("connection error", "err");
-  });
 }
 
 function applyChunk(chunk: ChunkSnapshot) {

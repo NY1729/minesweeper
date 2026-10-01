@@ -16,20 +16,6 @@ html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; backg
   touch-action: none;
 }
 
-.dot {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #b8c0d0;
-}
-.dot[data-state="ok"] { background: #2e9e57; }
-.dot[data-state="wait"] { background: #e8b53a; animation: pulse 1s infinite; }
-.dot[data-state="err"] { background: #e0434f; }
-@keyframes pulse { 50% { opacity: .3; } }
-
 .round-btn {
   position: fixed;
   right: 16px;
