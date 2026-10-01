@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#eef1f7" />
+    <title>OpenWorld Minesweeper</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="board"></canvas>
+      <i class="dot" id="dot" role="status"></i>
+      <section class="ranking" id="ranking" aria-label="ランキング（正しく立てた旗の数）">
+        <ol id="rank-list"></ol>
+        <div class="rank-me">あなた <b id="rank-me">0</b></div>
+      </section>
+      <button class="round-btn" id="flag-btn" aria-label="名前と旗を編集"><img id="flag-preview" alt="" /></button>
+    </div>
+    <dialog id="editor">
+      <form method="dialog">
+        <input id="name" maxlength="16" placeholder="名前" autocomplete="nickname" aria-label="名前" />
+        <canvas id="pixels" width="16" height="16" aria-label="旗のドット絵"></canvas>
+        <div class="palette" id="palette"></div>
+        <div class="tools">
+          <span class="spacer"></span>
+          <button value="cancel">戻る</button>
+          <button value="save" class="primary">保存</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

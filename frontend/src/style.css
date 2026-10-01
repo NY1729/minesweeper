@@ -1,0 +1,135 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #1f2533;
+  background: #eef1f7;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #eef1f7; }
+
+#board {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.dot {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #b8c0d0;
+}
+.dot[data-state="ok"] { background: #2e9e57; }
+.dot[data-state="wait"] { background: #e8b53a; animation: pulse 1s infinite; }
+.dot[data-state="err"] { background: #e0434f; }
+@keyframes pulse { 50% { opacity: .3; } }
+
+.round-btn {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 56px;
+  height: 56px;
+  border: 0;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(30, 40, 70, .15);
+  cursor: pointer;
+  transition: transform .15s;
+}
+.round-btn:hover { transform: scale(1.06); }
+.round-btn img { width: 32px; height: 32px; image-rendering: pixelated; display: block; margin: auto; }
+
+button:focus-visible { outline: 2px solid #2f6fdf; outline-offset: 2px; }
+
+#editor {
+  border: 0;
+  border-radius: 18px;
+  background: #fff;
+  color: inherit;
+  padding: 16px;
+  box-shadow: 0 12px 40px rgba(30, 40, 70, .2);
+}
+#editor::backdrop { background: rgba(30, 40, 70, .25); }
+#editor form { display: flex; flex-direction: column; gap: 12px; }
+#pixels {
+  width: min(320px, 80vw);
+  aspect-ratio: 1;
+  image-rendering: pixelated;
+  touch-action: none;
+  cursor: crosshair;
+  border-radius: 8px;
+  background-color: #f6f8fc;
+  background-image:
+    linear-gradient(rgba(30, 40, 70, .08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 40, 70, .08) 1px, transparent 1px);
+  background-size: 6.25% 6.25%;
+}
+.tools { display: flex; gap: 8px; align-items: center; }
+.spacer { flex: 1; }
+.tools button {
+  font: inherit;
+  font-size: 14px;
+  color: inherit;
+  background: #eef1f7;
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.tools button[aria-pressed="true"] { background: #d6e3fb; }
+.tools .primary { background: #2f6fdf; color: #fff; }
+.palette { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.swatch {
+  aspect-ratio: 1;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  /* index 0 = transparent: checkerboard */
+  background: repeating-conic-gradient(#d9e0ec 0 25%, #fff 0 50%) 50% / 10px 10px;
+  box-shadow: inset 0 0 0 1px rgba(30, 40, 70, .12);
+}
+.swatch[aria-pressed="true"] { border-color: #2f6fdf; }
+.round-btn img:not([src]) { visibility: hidden; }
+
+.ranking {
+  position: fixed;
+  top: 40px;
+  right: 16px;
+  width: 220px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .92);
+  box-shadow: 0 4px 16px rgba(30, 40, 70, .12);
+  font-size: 13px;
+  pointer-events: none;
+}
+@media (max-width: 640px) {
+  .ranking { width: 160px; padding: 8px 10px; font-size: 12px; }
+  .ranking ol { gap: 3px; }
+}
+.ranking ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.ranking li { display: flex; align-items: center; gap: 8px; }
+.ranking li.mine { font-weight: 600; }
+.ranking .rank { width: 1.5em; color: #8a90a0; text-align: right; font-variant-numeric: tabular-nums; }
+.ranking img { width: 20px; height: 20px; image-rendering: pixelated; }
+.ranking .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ranking .score { font-variant-numeric: tabular-nums; }
+.ranking .empty { color: #8a90a0; }
+.rank-me { margin-top: 10px; padding-top: 8px; border-top: 1px solid #eef1f7; display: flex; justify-content: space-between; color: #5a6070; }
+
+#name {
+  font: inherit;
+  font-size: 15px;
+  padding: 8px 12px;
+  border: 1px solid #d9e0ec;
+  border-radius: 10px;
+  outline: none;
+}
+#name:focus { border-color: #2f6fdf; }

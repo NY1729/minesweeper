@@ -1,0 +1,27 @@
+# Secrets: Turso token, Cloudflare tunnel token, world seed. Keep only the *.example files.
+.env
+.env.*
+!.env.example
+
+# Frontend
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+
+# Backend
+*.test
+*.out
+/backend/server
+/backend/minesweeper
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
