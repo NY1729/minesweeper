@@ -29,7 +29,6 @@ const flagPreview = document.querySelector<HTMLImageElement>("#flag-preview")!;
 const editor = document.querySelector<HTMLDialogElement>("#editor")!;
 const pixelsEl = document.querySelector<HTMLCanvasElement>("#pixels")!;
 const pctx = pixelsEl.getContext("2d")!;
-const paletteEl = document.querySelector<HTMLElement>("#palette")!;
 const nameEl = document.querySelector<HTMLInputElement>("#name")!;
 const rankList = document.querySelector<HTMLElement>("#rank-list")!;
 const tipEl = document.querySelector<HTMLElement>("#tip")!;
@@ -37,45 +36,70 @@ const tipFlag = document.querySelector<HTMLCanvasElement>("#tip-flag")!;
 const tipName = document.querySelector<HTMLElement>("#tip-name")!;
 const rankMe = document.querySelector<HTMLElement>("#rank-me")!;
 
-// Flags are 16x16 pixels, each a palette index stored as one base-36 digit (256 chars total,
-// so up to 36 entries; the server accepts 0-31). Index 0 is transparent.
-// Never change or reorder existing entries (that recolors every saved flag); only append.
-const PALETTE = [
+// A flag is 16x16 pixels, stored and sent as a string in one of two formats (told apart by length):
+//  - 1024 chars: per pixel "a r g b", one hex digit each: RGB with 16 levels per channel
+//    (4096 colors); alpha is 0 (transparent) or f (opaque). The editor writes this one.
+//  - 256 chars (legacy): one base-36 digit per pixel indexing LEGACY_PALETTE, 0 = transparent.
+//    Flags saved before free color selection still use it; never reorder LEGACY_PALETTE.
+// In memory a pixel is -1 (transparent) or 0xRGB.
+const LEGACY_PALETTE = [
   "", "#1f2533", "#ffffff", "#8a90a0", "#e0434f", "#f28c28", "#f4c430", "#a8d84e",
   "#2e9e57", "#13958c", "#7cc6f2", "#2f6fdf", "#6a4fd1", "#d94fa3", "#ffb3c1", "#8b5a2b",
-  // added later: shades and skin tones
   "#4a4f5c", "#c9cedb", "#8f1d2c", "#ff9e9e", "#c76a12", "#ffd99a", "#d9a066", "#fff1a8",
   "#5a7d1e", "#b8ecc8", "#1b5e3a", "#0b5c63", "#1c3d8f", "#b9cdfa", "#3a2a6b", "#c9b8f5",
 ];
 
+const pack = (r: number, g: number, b: number) => (r << 8) | (g << 4) | b;
+const rgb12 = (hex: string) => pack(...([1, 3, 5].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) / 17)) as [number, number, number]));
+const css12 = (v: number) => `rgb(${((v >> 8) & 15) * 17} ${((v >> 4) & 15) * 17} ${(v & 15) * 17})`;
+
+function decodePixels(s: string): number[] {
+  const px = new Array<number>(256).fill(-1);
+  if (s.length === 1024) {
+    for (let i = 0; i < 256; i++) {
+      const v = parseInt(s.slice(i * 4 + 1, i * 4 + 4), 16);
+      if (s[i * 4] !== "0" && !Number.isNaN(v)) px[i] = v;
+    }
+  } else if (s.length === 256) {
+    for (let i = 0; i < 256; i++) {
+      const c = LEGACY_PALETTE[parseInt(s[i], 36)];
+      if (c) px[i] = rgb12(c);
+    }
+  }
+  return px;
+}
+
+const encodePixels = (px: number[]) => px.map((v) => (v < 0 ? "0000" : "f" + v.toString(16).padStart(3, "0"))).join("");
+
+function paintPx(target: CanvasRenderingContext2D, px: number[]) {
+  const img = target.createImageData(16, 16);
+  for (let i = 0; i < 256; i++) {
+    const v = px[i];
+    if (v >= 0) img.data.set([((v >> 8) & 15) * 17, ((v >> 4) & 15) * 17, (v & 15) * 17, 255], i * 4);
+  }
+  target.putImageData(img, 0, 0);
+}
+
+function makeImage(s: string): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = c.height = 16;
+  paintPx(c.getContext("2d")!, decodePixels(s));
+  return c;
+}
+
+// A pennant on a pole; also the flag everyone starts with (random color on the first visit).
 function pennant(color: number): string {
-  const px = new Array<number>(256).fill(0);
-  for (let y = 1; y < 15; y++) px[y * 16 + 3] = px[y * 16 + 4] = 1;
+  const px = new Array<number>(256).fill(-1);
+  const pole = rgb12(LEGACY_PALETTE[1]);
+  for (let y = 1; y < 15; y++) px[y * 16 + 3] = px[y * 16 + 4] = pole;
   for (let i = 0; i < 9; i++) {
     const w = (4 - Math.abs(i - 4)) * 2 + 1;
     for (let x = 0; x < w; x++) px[(2 + i) * 16 + 5 + x] = color;
   }
-  return px.map((v) => v.toString(36)).join("");
+  return encodePixels(px);
 }
 
-function paintPixels(target: CanvasRenderingContext2D, hex: string) {
-  target.clearRect(0, 0, 16, 16);
-  for (let i = 0; i < 256; i++) {
-    const c = PALETTE[parseInt(hex[i], 36)];
-    if (!c) continue;
-    target.fillStyle = c;
-    target.fillRect(i % 16, Math.floor(i / 16), 1, 1);
-  }
-}
-
-function makeImage(hex: string): HTMLCanvasElement {
-  const c = document.createElement("canvas");
-  c.width = c.height = 16;
-  paintPixels(c.getContext("2d")!, hex);
-  return c;
-}
-
-const defaultFlag = makeImage(pennant(3));
+const defaultFlag = makeImage(pennant(rgb12(LEGACY_PALETTE[3])));
 const userImages = new Map<string, HTMLCanvasElement>();
 const userNames = new Map<string, string>();
 const displayName = (id: string) => userNames.get(id) || `Player ${id.slice(0, 4)}`;
@@ -167,19 +191,80 @@ let myPixels = "";
 let myName = "";
 
 let editing: number[] = [];
-let brush = 1;
+let color = rgb12(LEGACY_PALETTE[4]);
+type Tool = "pen" | "eraser" | "pick";
+let tool: Tool = "pen";
 
-function renderPalette() {
-  paletteEl.replaceChildren(...PALETTE.map((color, i) => {
+let recent: number[] = [];
+try {
+  const saved = JSON.parse(localStorage.getItem("recentColors") ?? "[]");
+  if (Array.isArray(saved)) recent = saved.filter((v) => Number.isInteger(v) && v >= 0 && v < 4096).slice(0, 10);
+} catch {}
+
+const PRESETS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 21].map((i) => rgb12(LEGACY_PALETTE[i]));
+const curEl = document.querySelector<HTMLElement>("#cur")!;
+const curHex = document.querySelector<HTMLElement>("#cur-hex")!;
+const recentEl = document.querySelector<HTMLElement>("#recent")!;
+const recentGroup = document.querySelector<HTMLElement>("#recent-group")!;
+const presetsEl = document.querySelector<HTMLElement>("#presets")!;
+const channels = (["r", "g", "b"] as const).map((c) => ({
+  input: document.querySelector<HTMLInputElement>(`#ch-${c}`)!,
+  out: document.querySelector<HTMLElement>(`#out-${c}`)!,
+}));
+const toolBtns = [...document.querySelectorAll<HTMLButtonElement>("[data-tool]")];
+const sizeBtns = [...document.querySelectorAll<HTMLButtonElement>("[data-size]")];
+let size = 1; // pen / eraser width in pixels
+
+function renderSwatches(el: HTMLElement, colors: number[]) {
+  el.replaceChildren(...colors.map((v) => {
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "swatch";
-    if (color) b.style.background = color;
-    b.setAttribute("aria-label", color ? `色 ${color}` : "消しゴム");
-    b.setAttribute("aria-pressed", String(i === brush));
-    b.onclick = () => { brush = i; renderPalette(); };
+    b.style.background = css12(v);
+    b.setAttribute("aria-label", `色 #${v.toString(16).padStart(3, "0")}`);
+    b.setAttribute("aria-pressed", String(v === color));
+    b.onclick = () => { setColor(v); setTool("pen"); };
     return b;
   }));
+}
+
+function setColor(v: number) {
+  color = v;
+  const ch = [(v >> 8) & 15, (v >> 4) & 15, v & 15];
+  channels.forEach((c, i) => {
+    c.input.value = String(ch[i]);
+    c.out.textContent = String(ch[i]);
+    // the track shows what this channel would do to the current color
+    const lo = [...ch]; lo[i] = 0;
+    const hi = [...ch]; hi[i] = 15;
+    c.input.style.setProperty("--from", css12(pack(lo[0], lo[1], lo[2])));
+    c.input.style.setProperty("--to", css12(pack(hi[0], hi[1], hi[2])));
+  });
+  curEl.style.background = css12(v);
+  curHex.textContent = "#" + v.toString(16).padStart(3, "0");
+  renderSwatches(presetsEl, PRESETS);
+  renderSwatches(recentEl, recent);
+}
+
+function setTool(t: Tool) {
+  tool = t;
+  toolBtns.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.tool === t)));
+}
+toolBtns.forEach((b) => (b.onclick = () => setTool(b.dataset.tool as Tool)));
+sizeBtns.forEach((b) => (b.onclick = () => {
+  size = Number(b.dataset.size);
+  sizeBtns.forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+}));
+channels.forEach((c) => (c.input.oninput = () => {
+  setColor(pack(+channels[0].input.value, +channels[1].input.value, +channels[2].input.value));
+  setTool("pen");
+}));
+
+function remember(v: number) {
+  if (recent[0] === v) return;
+  recent = [v, ...recent.filter((c) => c !== v)].slice(0, 10);
+  try { localStorage.setItem("recentColors", JSON.stringify(recent)); } catch {}
+  recentGroup.hidden = false;
+  renderSwatches(recentEl, recent);
 }
 
 function paint(e: PointerEvent) {
@@ -187,8 +272,20 @@ function paint(e: PointerEvent) {
   const x = Math.floor(((e.clientX - r.left) / r.width) * 16);
   const y = Math.floor(((e.clientY - r.top) / r.height) * 16);
   if (x < 0 || y < 0 || x > 15 || y > 15) return;
-  editing[y * 16 + x] = brush;
-  paintPixels(pctx, editing.map((v) => v.toString(36)).join(""));
+  const i = y * 16 + x;
+  if (tool === "pick") {
+    if (editing[i] >= 0) { setColor(editing[i]); setTool("pen"); }
+    return;
+  }
+  // size x size square around the pointer (even sizes extend right/down), clipped at the edges
+  const lo = -Math.floor((size - 1) / 2);
+  for (let py = y + lo; py < y + lo + size; py++) {
+    for (let px = x + lo; px < x + lo + size; px++) {
+      if (px >= 0 && py >= 0 && px < 16 && py < 16) editing[py * 16 + px] = tool === "eraser" ? -1 : color;
+    }
+  }
+  if (tool === "pen") remember(color);
+  paintPx(pctx, editing);
 }
 pixelsEl.addEventListener("pointerdown", (e) => {
   pixelsEl.setPointerCapture(e.pointerId);
@@ -200,18 +297,19 @@ pixelsEl.addEventListener("pointermove", (e) => {
 
 flagBtn.onclick = () => {
   if (!myPixels) return;
-  editing = [...myPixels].map((ch) => parseInt(ch, 36));
-  paintPixels(pctx, myPixels);
+  editing = decodePixels(myPixels);
+  paintPx(pctx, editing);
   nameEl.value = myName;
-  renderPalette();
+  setTool("pen");
+  recentGroup.hidden = recent.length === 0;
+  setColor(color);
   editor.returnValue = ""; // Esc keeps the previous returnValue, which could be "save".
   editor.showModal();
 };
 
 editor.addEventListener("close", () => {
   if (editor.returnValue !== "save") return;
-  const hex = editing.map((v) => v.toString(36)).join("");
-  setUser(myId, hex, nameEl.value.trim().slice(0, 16));
+  setUser(myId, encodePixels(editing), nameEl.value.trim().slice(0, 16));
   saveProfile();
   draw();
 });
@@ -249,7 +347,7 @@ function updateTip() {
 
 // Cells other players are hovering, keyed by connection.
 const cursors = new Map<number, { id: string; x: number; y: number }>();
-const CURSOR_COLORS = [4, 5, 6, 8, 9, 11, 12, 13].map((i) => PALETTE[i]);
+const CURSOR_COLORS = [4, 5, 6, 8, 9, 11, 12, 13].map((i) => LEGACY_PALETTE[i]);
 const cursorColor = (id: string) => CURSOR_COLORS[parseInt(id.slice(0, 8), 16) % CURSOR_COLORS.length];
 
 // Own hovered cell: sent when it changes (at most every 100ms); the server relays it right away.
@@ -338,7 +436,7 @@ function connect() {
       if (msg.pixels) setUser(myId, msg.pixels, msg.name);
       else {
         // First visit: a pennant in a random palette color.
-        setUser(myId, pennant(4 + Math.floor(Math.random() * 12)), msg.name);
+        setUser(myId, pennant(rgb12(LEGACY_PALETTE[4 + Math.floor(Math.random() * 12)])), msg.name);
         saveProfile();
       }
       draw();

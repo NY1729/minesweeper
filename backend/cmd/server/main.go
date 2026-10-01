@@ -143,9 +143,12 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// 16x16 pixels, one base-36 digit (palette index 0-31) each. 0-9a-f are the original 16
-// colors, so flags saved before the palette grew stay valid.
-var pixelsRe = regexp.MustCompile(`^[0-9a-v]{256}$`)
+// A flag is 16x16 pixels in one of two formats, told apart by length:
+//   - 1024 chars: per pixel "a r g b", one hex digit each (RGB 16 levels per channel; alpha is 0 or f).
+//   - 256 chars (legacy): one base-36 digit per pixel, a palette index 0-31.
+//
+// Flags saved in the legacy format stay valid; the client converts them when they are edited.
+var pixelsRe = regexp.MustCompile(`^(?:(?:[0f][0-9a-f]{3}){256}|[0-9a-v]{256})$`)
 var userIDRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 const maxNameRunes = 16

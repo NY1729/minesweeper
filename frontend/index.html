@@ -22,8 +22,39 @@
       <form method="dialog">
         <input id="name" maxlength="16" placeholder="名前" autocomplete="nickname" aria-label="名前" />
         <canvas id="pixels" width="16" height="16" aria-label="旗のドット絵"></canvas>
-        <div class="palette" id="palette"></div>
-        <div class="tools">
+        <div class="controls">
+          <div class="seg" role="group" aria-label="ツール">
+            <button type="button" data-tool="pen" aria-pressed="true">ペン</button>
+            <button type="button" data-tool="eraser" aria-pressed="false">消しゴム</button>
+            <button type="button" data-tool="pick" aria-pressed="false">スポイト</button>
+          </div>
+          <div class="seg" role="group" aria-label="太さ">
+            <span class="seg-label">太さ</span>
+            <button type="button" data-size="1" aria-pressed="true">1×1</button>
+            <button type="button" data-size="2" aria-pressed="false">2×2</button>
+            <button type="button" data-size="3" aria-pressed="false">3×3</button>
+          </div>
+          <div class="mixer">
+            <div class="current">
+              <span class="chip" id="cur"></span>
+              <code id="cur-hex">#000</code>
+            </div>
+            <div class="channels">
+              <label class="ch"><span>R</span><input type="range" id="ch-r" min="0" max="15" step="1" /><output id="out-r">0</output></label>
+              <label class="ch"><span>G</span><input type="range" id="ch-g" min="0" max="15" step="1" /><output id="out-g">0</output></label>
+              <label class="ch"><span>B</span><input type="range" id="ch-b" min="0" max="15" step="1" /><output id="out-b">0</output></label>
+            </div>
+          </div>
+          <div id="recent-group" hidden>
+            <div class="group-label">最近使った色</div>
+            <div class="swatches" id="recent"></div>
+          </div>
+          <div>
+            <div class="group-label">プリセット</div>
+            <div class="swatches" id="presets"></div>
+          </div>
+        </div>
+        <div class="tools actions">
           <span class="spacer"></span>
           <button value="cancel">戻る</button>
           <button value="save" class="primary">保存</button>

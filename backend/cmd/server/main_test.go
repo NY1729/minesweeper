@@ -44,10 +44,35 @@ func TestRateLimitsSurviveReconnect(t *testing.T) {
 
 func TestPixelsRe(t *testing.T) {
 	ok := func(s string) bool { return pixelsRe.MatchString(s) }
-	if !ok(strings.Repeat("a", 256)) || !ok(strings.Repeat("v", 256)) || !ok(strings.Repeat("0", 256)) {
-		t.Fatal("palette indices 0-31 must be accepted")
+	rgba := func(px string) string { return strings.Repeat(px, 256) }
+
+	// current format: alpha 0 or f, then r g b
+	for _, px := range []string{"0000", "f000", "ffff", "fd45", "f0a9"} {
+		if !ok(rgba(px)) {
+			t.Fatalf("pixel %q must be accepted", px)
+		}
 	}
-	if ok(strings.Repeat("w", 256)) || ok(strings.Repeat("A", 256)) || ok(strings.Repeat("a", 255)) || ok(strings.Repeat("a", 257)) {
-		t.Fatal("out of range indices and wrong lengths must be rejected")
+	// legacy format: palette indices 0-31
+	for _, c := range []string{"0", "a", "v"} {
+		if !ok(strings.Repeat(c, 256)) {
+			t.Fatalf("legacy digit %q must be accepted", c)
+		}
+	}
+	bad := map[string]string{
+		"semi-transparent": rgba("8123"),
+		"uppercase":        rgba("fABC"),
+		"non-hex channel":  rgba("f12g"),
+		"legacy too high":  strings.Repeat("w", 256),
+		"legacy short":     strings.Repeat("a", 255),
+		"legacy long":      strings.Repeat("a", 257),
+		"rgba short":       rgba("f123")[:1020],
+		"rgba long":        rgba("f123") + "f123",
+		"mixed lengths":    strings.Repeat("a", 512),
+		"empty":            "",
+	}
+	for name, s := range bad {
+		if ok(s) {
+			t.Fatalf("%s must be rejected", name)
+		}
 	}
 }
