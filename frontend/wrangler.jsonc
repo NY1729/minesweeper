@@ -1,0 +1,9 @@
+{
+  // Static site: `npm run build` writes dist/, `wrangler deploy` serves it as Worker static assets.
+  // "name" must match the project name set in Cloudflare.
+  "name": "minesweeper",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./dist" },
+  // Keep the custom domain attached: a deploy replaces the Worker's dashboard config with this file.
+  "routes": [{ "pattern": "mine.alt0.org", "custom_domain": true }]
+}

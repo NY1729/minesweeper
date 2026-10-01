@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# Public URLs only, no secrets: needed by the Cloudflare build.
+!.env.production
 
 # Frontend
 node_modules/
