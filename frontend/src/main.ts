@@ -52,6 +52,44 @@ function pennant(color: number): string {
   return px.map((v) => v.toString(16)).join("");
 }
 
+const PALETTE_RGB = PALETTE.map((c) => (c ? [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)) : null));
+
+// Closest palette entry (1..15) by perceptually weighted distance; transparent pixels stay 0.
+function nearestPalette(r: number, g: number, b: number, a: number): number {
+  if (a < 128) return 0;
+  let best = 1;
+  let bestD = Infinity;
+  for (let i = 1; i < PALETTE_RGB.length; i++) {
+    const [pr, pg, pb] = PALETTE_RGB[i]!;
+    const d = 0.3 * (r - pr) ** 2 + 0.59 * (g - pg) ** 2 + 0.11 * (b - pb) ** 2;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+// Turns any image into 16x16 palette pixels, entirely in the browser (nothing is uploaded).
+async function pixelate(file: File): Promise<number[]> {
+  const bmp = await createImageBitmap(file);
+  const side = Math.min(bmp.width, bmp.height); // centered square crop
+  const sx = (bmp.width - side) / 2;
+  const sy = (bmp.height - side) / 2;
+  // Two steps (-> 64 -> 16) so big photos are averaged instead of aliased.
+  const step = (size: number, src: CanvasImageSource, ...crop: number[]) => {
+    const c = document.createElement("canvas");
+    c.width = c.height = size;
+    const g = c.getContext("2d", { willReadFrequently: true })!;
+    g.imageSmoothingQuality = "high";
+    if (crop.length) g.drawImage(src, crop[0], crop[1], crop[2], crop[3], 0, 0, size, size);
+    else g.drawImage(src, 0, 0, size, size);
+    return { c, g };
+  };
+  const mid = step(64, bmp, sx, sy, side, side);
+  const small = step(16, mid.c);
+  bmp.close();
+  const d = small.g.getImageData(0, 0, 16, 16).data;
+  return Array.from({ length: 256 }, (_, i) => nearestPalette(d[i * 4], d[i * 4 + 1], d[i * 4 + 2], d[i * 4 + 3]));
+}
+
 function paintPixels(target: CanvasRenderingContext2D, hex: string) {
   target.clearRect(0, 0, 16, 16);
   for (let i = 0; i < 256; i++) {
@@ -192,6 +230,20 @@ pixelsEl.addEventListener("pointermove", (e) => {
   if (e.buttons & 1) paint(e);
 });
 
+const importFile = document.querySelector<HTMLInputElement>("#import-file")!;
+document.querySelector<HTMLButtonElement>("#import")!.onclick = () => importFile.click();
+importFile.onchange = async () => {
+  const file = importFile.files?.[0];
+  importFile.value = ""; // allow picking the same file again
+  if (!file) return;
+  try {
+    editing = await pixelate(file);
+    paintPixels(pctx, editing.map((v) => v.toString(16)).join(""));
+  } catch {
+    // not a decodable image: leave the drawing as it was
+  }
+};
+
 flagBtn.onclick = () => {
   if (!myPixels) return;
   editing = [...myPixels].map((ch) => parseInt(ch, 16));
@@ -304,6 +356,9 @@ function connect() {
 
     if (msg.type === "me") {
       myId = msg.id;
+      // Never ask the server for our own profile: while a save is still waiting out its
+      // 10s rate limit, the server's copy is stale and would overwrite the new drawing.
+      requestedUsers.add(myId);
       ranking.me = msg.score;
       if (msg.pixels) setUser(myId, msg.pixels, msg.name);
       else {
@@ -540,18 +595,29 @@ function render() {
       const value = revealed.get(k);
       const owner = flags.get(k);
 
+      // A flag marks its cell in the owner's color (same color as their hover cell).
+      const mark = owner === undefined ? "" : owner ? cursorColor(owner) : "#8a90a0";
+
       if (coarse) {
         if (value === undefined && owner === undefined) continue; // background already unrevealed
-        if (value !== undefined) {
-          ctx.fillStyle = value === 9 ? "#ffd6dc" : "#ffffff";
-          ctx.fillRect(px, py, cellSize + 0.5, cellSize + 0.5);
-        }
+        ctx.fillStyle = mark || (value === 9 ? "#ffd6dc" : "#ffffff");
+        ctx.fillRect(px, py, cellSize + 0.5, cellSize + 0.5);
       } else {
         ctx.fillStyle = value === undefined ? "#d9e0ec" : value === 9 ? "#ffd6dc" : "#ffffff";
         ctx.fillRect(px + 1, py + 1, cellSize - 2, cellSize - 2);
+        if (mark) {
+          ctx.fillStyle = mark;
+          ctx.globalAlpha = 0.22;
+          ctx.fillRect(px + 1, py + 1, cellSize - 2, cellSize - 2);
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = mark;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(px + 2, py + 2, cellSize - 4, cellSize - 4);
+        }
       }
 
       if (owner !== undefined) {
+        if (coarse && cellSize < 12) continue; // too small for the flag picture; the colored cell is the marker
         const img = userImages.get(owner) ?? defaultFlag;
         ctx.drawImage(img, px + (cellSize - flagSize) / 2, py + (cellSize - flagSize) / 2, flagSize, flagSize);
       } else if (!coarse && value !== undefined && value !== 0) {
