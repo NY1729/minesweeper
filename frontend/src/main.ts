@@ -33,6 +33,9 @@ const pctx = pixelsEl.getContext("2d")!;
 const paletteEl = document.querySelector<HTMLElement>("#palette")!;
 const nameEl = document.querySelector<HTMLInputElement>("#name")!;
 const rankList = document.querySelector<HTMLElement>("#rank-list")!;
+const tipEl = document.querySelector<HTMLElement>("#tip")!;
+const tipFlag = document.querySelector<HTMLCanvasElement>("#tip-flag")!;
+const tipName = document.querySelector<HTMLElement>("#tip-name")!;
 const rankMe = document.querySelector<HTMLElement>("#rank-me")!;
 
 // Flags are 16x16 pixels, each a palette index stored as one hex digit (256 chars total).
@@ -217,6 +220,35 @@ function setStatus(text: string, state: "ok" | "wait" | "err") {
 }
 
 let hover: { x: number; y: number } | null = null;
+let pointer = { x: 0, y: 0 };
+let tipShown = ""; // "owner|name" currently drawn in the tooltip, to redraw only on change
+
+// Tooltip with the owner's name and flag while hovering a flagged cell (mouse only).
+// Called after every draw (any state change) and on pointer moves (position only).
+function updateTip() {
+  const owner = hover && !dragging ? flags.get(key(hover.x, hover.y)) : undefined;
+  if (owner === undefined) {
+    tipEl.hidden = true;
+    tipShown = "";
+    return;
+  }
+  const name = owner ? displayName(owner) + (owner === myId ? "（あなた）" : "") : "持ち主なし";
+  const shown = `${owner}|${name}|${userImages.get(owner) ? 1 : 0}`;
+  if (shown !== tipShown) {
+    tipShown = shown;
+    const g = tipFlag.getContext("2d")!;
+    g.clearRect(0, 0, 16, 16);
+    g.drawImage(userImages.get(owner) ?? defaultFlag, 0, 0);
+    tipName.textContent = name;
+  }
+  tipEl.hidden = false;
+  // Keep inside the window: flip to the left of / above the pointer near the edges.
+  const w = tipEl.offsetWidth;
+  const h = tipEl.offsetHeight;
+  const x = pointer.x + 14 + w > innerWidth ? pointer.x - 14 - w : pointer.x + 14;
+  const y = pointer.y + 18 + h > innerHeight ? pointer.y - 18 - h : pointer.y + 18;
+  tipEl.style.transform = `translate(${x}px, ${y}px)`;
+}
 
 // Cells other players are hovering, keyed by connection.
 const cursors = new Map<number, { id: string; x: number; y: number }>();
@@ -633,6 +665,8 @@ function render() {
     ctx.textBaseline = "middle";
     ctx.fillText(label, tagX + 20, tagY + 9.5);
   }
+
+  updateTip();
 }
 
 // The server accepts 64 subscribed chunks per client; zooming out further than this would
@@ -681,6 +715,7 @@ canvas.addEventListener("pointerdown", (event) => {
 
 canvas.addEventListener("pointermove", (event) => {
   const cell = cellFromScreen(event.clientX, event.clientY);
+  pointer = { x: event.clientX, y: event.clientY };
   if (event.pointerType === "mouse") {
     myCursor = cell;
     queueCursor();
@@ -691,6 +726,7 @@ canvas.addEventListener("pointermove", (event) => {
       hover = cell;
       draw();
     }
+    if (event.pointerType === "mouse") updateTip();
     return;
   }
   const dx = event.clientX - pointerStartX;
