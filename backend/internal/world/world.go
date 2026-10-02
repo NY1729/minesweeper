@@ -305,12 +305,18 @@ func (m *Manager) Reveal(ctx context.Context, startX, startY int64) ([]Cell, err
 	return updates, nil
 }
 
-func (m *Manager) DirtySnapshots() []store.ChunkRecord {
+// DirtySnapshots returns up to limit unsaved chunks and marks exactly those as saved
+// (call MarkDirty with them if saving fails). The rest stay dirty for the next call, so one
+// save never has to carry the whole backlog.
+func (m *Manager) DirtySnapshots(limit int) []store.ChunkRecord {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	out := make([]store.ChunkRecord, 0)
 	for k, c := range m.chunks {
+		if len(out) >= limit {
+			break
+		}
 		if !c.dirty {
 			continue
 		}
@@ -327,6 +333,18 @@ func (m *Manager) DirtySnapshots() []store.ChunkRecord {
 		c.dirty = false
 	}
 	return out
+}
+
+// HasDirty reports whether any chunk is still waiting to be saved.
+func (m *Manager) HasDirty() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, c := range m.chunks {
+		if c.dirty {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) MarkDirty(records []store.ChunkRecord) {

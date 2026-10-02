@@ -22,7 +22,7 @@ func TestFlagOwnership(t *testing.T) {
 	if len(snap.Flags) != 1 || snap.Flags[0].Owner != "alice" {
 		t.Fatalf("snapshot flags = %+v", snap.Flags)
 	}
-	recs := m.DirtySnapshots()
+	recs := m.DirtySnapshots(100)
 	if len(recs) != 1 || recs[0].Owners == "{}" {
 		t.Fatalf("owners not persisted: %+v", recs)
 	}
@@ -40,7 +40,7 @@ func TestEvictKeepsDirtyAndSubscribed(t *testing.T) {
 	if n := m.Evict(func(cx, cy int64) bool { return cx == 2 }); n != 1 {
 		t.Fatalf("evicted %d, want 1", n)
 	}
-	m.DirtySnapshots() // saved -> clean
+	m.DirtySnapshots(100) // saved -> clean
 	if n := m.Evict(func(int64, int64) bool { return false }); n != 2 {
 		t.Fatalf("evicted %d, want 2", n)
 	}
@@ -84,5 +84,27 @@ func TestScoreDelta(t *testing.T) {
 	}
 	if low := NewManager("t", "seed", 50, &store.MemoryStore{}).MinePenalty(); low <= 10 {
 		t.Fatalf("penalty must grow as mines get rarer, got %d", low)
+	}
+}
+
+func TestDirtySnapshotsIsBoundedAndKeepsTheRestDirty(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager("t", "seed", 0, &store.MemoryStore{})
+	for i := int64(0); i < 10; i++ {
+		m.ToggleFlag(ctx, i*ChunkSize, 0, "a") // ten different chunks
+	}
+	first := m.DirtySnapshots(4)
+	if len(first) != 4 || !m.HasDirty() {
+		t.Fatalf("limit 4 returned %d, hasDirty=%v", len(first), m.HasDirty())
+	}
+	m.MarkDirty(first) // a failed save puts exactly those back
+	seen := map[int64]bool{}
+	for total := 0; m.HasDirty() && total < 20; total++ {
+		for _, r := range m.DirtySnapshots(4) {
+			seen[r.ChunkX] = true
+		}
+	}
+	if len(seen) != 10 || m.HasDirty() {
+		t.Fatalf("drained %d of 10 chunks, dirty=%v", len(seen), m.HasDirty())
 	}
 }

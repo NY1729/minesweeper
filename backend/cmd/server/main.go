@@ -265,7 +265,7 @@ func main() {
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
-	s.flushOnce(shutdownCtx)
+	s.flushAll(shutdownCtx)
 	_ = httpServer.Shutdown(shutdownCtx)
 }
 
@@ -624,7 +624,7 @@ func (s *server) flushLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			s.flushOnce(ctx)
+			s.flushAll(ctx) // a backlog drains in batches instead of waiting 2s per batch
 			if s.scoreDirty.Swap(false) {
 				pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 				s.pushRanking(pctx, true)
@@ -632,7 +632,7 @@ func (s *server) flushLoop(ctx context.Context) {
 			}
 		case <-evictTicker.C:
 			// Flush first so evicted chunks are already saved; same goroutine, so no flush is in flight.
-			s.flushOnce(ctx)
+			s.flushAll(ctx)
 			s.rates.sweep()
 			subscribed := s.hub.SubscribedKeys()
 			n := s.world.Evict(func(cx, cy int64) bool {
@@ -648,7 +648,8 @@ func (s *server) flushLoop(ctx context.Context) {
 	}
 }
 
-func (s *server) flushOnce(ctx context.Context) {
+// flushOnce saves pending scores and one batch of dirty chunks; false means the chunk save failed.
+func (s *server) flushOnce(ctx context.Context) bool {
 	flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -665,13 +666,29 @@ func (s *server) flushOnce(ctx context.Context) {
 		s.usersMu.Unlock()
 	}
 
-	records := s.world.DirtySnapshots()
+	records := s.world.DirtySnapshots(maxFlushChunks)
 	if len(records) == 0 {
-		return
+		return true
 	}
 
 	if err := s.store.SaveChunks(flushCtx, s.cfg.WorldID, records); err != nil {
 		log.Printf("store flush failed: %v", err)
 		s.world.MarkDirty(records)
+		return false
 	}
+	return true
+}
+
+// maxFlushChunks bounds one save: a transaction of this many chunks finishes well inside the
+// timeout, and a failure only retries this batch instead of the whole backlog.
+const maxFlushChunks = 50
+
+// flushAll keeps saving batches until nothing is dirty, a save fails, or ctx ends.
+func (s *server) flushAll(ctx context.Context) {
+	for ctx.Err() == nil && s.world.HasDirty() {
+		if !s.flushOnce(ctx) {
+			return
+		}
+	}
+	s.flushOnce(ctx) // scores, and anything dirtied meanwhile
 }

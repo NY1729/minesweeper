@@ -302,10 +302,12 @@ func (s *TursoStore) SaveChunks(ctx context.Context, worldID string, chunks []Ch
 	if len(chunks) == 0 {
 		return nil
 	}
-	reqs := make([]request, 0, len(chunks))
+	// One transaction per call: with separate statements every upsert commits on its own
+	// (~0.2s each on Turso), so a few dozen chunks could not be saved within the timeout.
+	stmts := make([]stmt, 0, len(chunks))
 	now := time.Now().Unix()
 	for _, c := range chunks {
-		reqs = append(reqs, executeArgs(
+		stmts = append(stmts, *executeArgs(
 			`INSERT INTO chunks(world_id, chunk_x, chunk_y, revealed, flags, flag_owners, version, updated_at)
 			 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(world_id, chunk_x, chunk_y) DO UPDATE SET
@@ -317,10 +319,9 @@ func (s *TursoStore) SaveChunks(ctx context.Context, worldID string, chunks []Ch
 			 WHERE excluded.version >= chunks.version`,
 			textArg(worldID), intArg(c.ChunkX), intArg(c.ChunkY),
 			textArg(c.Revealed), textArg(c.Flags), textArg(c.Owners), intArg(c.Version), intArg(now),
-		))
+		).Stmt)
 	}
-	_, err := s.pipeline(ctx, reqs)
-	return err
+	return s.transaction(ctx, stmts)
 }
 
 type value struct {
