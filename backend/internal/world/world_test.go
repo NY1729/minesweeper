@@ -3,7 +3,9 @@ package world
 import (
 	"context"
 	"math/rand"
+	"sync"
 	"testing"
+	"time"
 
 	"minesweeper/backend/internal/store"
 )
@@ -106,5 +108,156 @@ func TestDirtySnapshotsIsBoundedAndKeepsTheRestDirty(t *testing.T) {
 	}
 	if len(seen) != 10 || m.HasDirty() {
 		t.Fatalf("drained %d of 10 chunks, dirty=%v", len(seen), m.HasDirty())
+	}
+}
+
+// slowChunkStore is a store whose chunk reads take time (like Turso over the network);
+// block makes reads of one chunk column wait until its channel is closed.
+type slowChunkStore struct {
+	*store.MemoryStore
+	delay time.Duration
+	mu    sync.Mutex
+	loads map[int64]int
+	block map[int64]chan struct{}
+}
+
+func newSlowChunkStore(delay time.Duration) *slowChunkStore {
+	return &slowChunkStore{MemoryStore: &store.MemoryStore{}, delay: delay, loads: map[int64]int{}, block: map[int64]chan struct{}{}}
+}
+
+func (s *slowChunkStore) LoadChunk(ctx context.Context, w string, x, y int64) (store.ChunkRecord, bool, error) {
+	s.mu.Lock()
+	s.loads[x]++
+	gate := s.block[x]
+	s.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	time.Sleep(s.delay)
+	return s.MemoryStore.LoadChunk(ctx, w, x, y)
+}
+
+func (s *slowChunkStore) loadCount(x int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loads[x]
+}
+
+func TestConcurrentRequestsShareOneStoreRead(t *testing.T) {
+	st := newSlowChunkStore(100 * time.Millisecond)
+	m := NewManager("t", "seed", 0, st)
+	var wg sync.WaitGroup
+	got := make([]*chunk, 20)
+	for i := range got {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got[i], _ = m.getChunk(context.Background(), 3, 4)
+		}()
+	}
+	wg.Wait()
+	if n := st.loadCount(3); n != 1 {
+		t.Fatalf("20 concurrent requests read the chunk %d times, want 1", n)
+	}
+	for _, c := range got {
+		if c == nil || c != got[0] {
+			t.Fatal("everyone must get the same chunk")
+		}
+	}
+}
+
+func TestLoadSurvivesTheCallerGivingUp(t *testing.T) {
+	st := newSlowChunkStore(50 * time.Millisecond)
+	m := NewManager("t", "seed", 0, st)
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	var first *chunk
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		close(started)
+		first, _ = m.getChunk(ctx, 0, 0)
+	}()
+	<-started
+	time.Sleep(10 * time.Millisecond)
+	cancel() // the first requester's connection goes away mid-read
+	<-done
+	if first == nil {
+		t.Fatal("the shared read must not be cancelled with one caller")
+	}
+}
+
+// A flag on a chunk that is already loaded must not wait for another chunk's slow read:
+// the flag path used to hold the global lock while reading from the store.
+func TestFlagDoesNotWaitForAnotherChunksLoad(t *testing.T) {
+	st := newSlowChunkStore(0)
+	m := NewManager("t", "seed", 0, st)
+	ctx := context.Background()
+	if _, err := m.getChunk(ctx, 1, 0); err != nil { // chunk B is loaded
+		t.Fatal(err)
+	}
+	gate := make(chan struct{})
+	st.mu.Lock()
+	st.block[0] = gate // chunk A's read hangs until released
+	st.mu.Unlock()
+
+	aDone := make(chan struct{})
+	go func() {
+		m.ToggleFlag(ctx, 5, 5, "a") // chunk (0,0): stuck loading
+		close(aDone)
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	bDone := make(chan struct{})
+	go func() {
+		m.ToggleFlag(ctx, ChunkSize+5, 5, "b") // chunk (1,0): already loaded
+		close(bDone)
+	}()
+	select {
+	case <-bDone:
+	case <-time.After(time.Second):
+		t.Fatal("a flag on a loaded chunk was blocked by another chunk's store read")
+	}
+	close(gate)
+	select {
+	case <-aDone:
+	case <-time.After(time.Second):
+		t.Fatal("the blocked flag never finished after its chunk loaded")
+	}
+}
+
+func TestPrefetchOverlapsStoreReads(t *testing.T) {
+	st := newSlowChunkStore(100 * time.Millisecond)
+	m := NewManager("t", "seed", 0, st)
+	var coords [][2]int64
+	for x := int64(0); x < 8; x++ {
+		coords = append(coords, [2]int64{x, 0})
+	}
+	start := time.Now()
+	m.Prefetch(context.Background(), coords, 8)
+	if el := time.Since(start); el > 400*time.Millisecond {
+		t.Fatalf("8 reads of 100ms took %v; they should overlap (sequential would be 800ms)", el)
+	}
+	for x := int64(0); x < 8; x++ {
+		if st.loadCount(x) != 1 {
+			t.Fatalf("chunk %d read %d times", x, st.loadCount(x))
+		}
+	}
+}
+
+// After an eviction the next flag reloads the chunk and the change is kept and saved.
+func TestFlagAfterEvictionIsNotLost(t *testing.T) {
+	m := NewManager("t", "seed", 0, &store.MemoryStore{})
+	ctx := context.Background()
+	m.ToggleFlag(ctx, 5, 5, "a")
+	m.DirtySnapshots(10) // saved
+	if n := m.Evict(func(int64, int64) bool { return false }); n != 1 {
+		t.Fatalf("evicted %d", n)
+	}
+	if r, err := m.ToggleFlag(ctx, 6, 5, "a"); err != nil || !r.Changed {
+		t.Fatalf("flag after eviction failed: %+v %v", r, err)
+	}
+	if recs := m.DirtySnapshots(10); len(recs) != 1 {
+		t.Fatalf("the change must be waiting to be saved, got %d dirty chunks", len(recs))
 	}
 }

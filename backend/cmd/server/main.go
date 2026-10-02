@@ -469,6 +469,13 @@ func (s *server) handleSubscribe(ctx context.Context, peer *realtime.Peer, chunk
 	peer.SetSubscriptions(keys)
 	_ = peer.SendJSON(map[string]interface{}{"type": "cursors", "cursors": s.hub.CursorsFor(peer)})
 
+	// Read the chunks from the store in parallel (one after another took ~28 round trips).
+	coords := make([][2]int64, 0, len(chunks))
+	for _, c := range chunks {
+		coords = append(coords, [2]int64{c.X, c.Y})
+	}
+	s.world.Prefetch(ctx, coords, 8)
+
 	for _, c := range chunks {
 		snap, err := s.world.Snapshot(ctx, c.X, c.Y)
 		if err != nil {

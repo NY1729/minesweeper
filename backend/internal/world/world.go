@@ -61,11 +61,18 @@ type Manager struct {
 	store        store.Store
 	mu           sync.RWMutex
 	chunks       map[string]*chunk
-	opMu         sync.Mutex
+	loading      map[string]*loadCall // chunk loads in flight, so concurrent requests share one
+	opMu         sync.Mutex           // serialises reveals and flag changes; never held while waiting for the store
+}
+
+type loadCall struct {
+	done chan struct{}
+	c    *chunk
+	err  error
 }
 
 func NewManager(worldID, seed string, minePermille uint64, st store.Store) *Manager {
-	return &Manager{worldID: worldID, seed: []byte(seed), minePermille: minePermille, store: st, chunks: make(map[string]*chunk)}
+	return &Manager{worldID: worldID, seed: []byte(seed), minePermille: minePermille, store: st, chunks: make(map[string]*chunk), loading: make(map[string]*loadCall)}
 }
 
 func key(cx, cy int64) string { return fmt.Sprintf("%d:%d", cx, cy) }
@@ -133,27 +140,57 @@ func bitSet(b []byte, idx int, on bool) {
 	}
 }
 
+// getChunk returns the loaded chunk, loading it from the store if needed. Concurrent callers
+// for the same chunk share a single store read (a new player's 28 chunks used to be read once
+// per player, and again by everyone else who touched them meanwhile).
 func (m *Manager) getChunk(ctx context.Context, cx, cy int64) (*chunk, error) {
 	k := key(cx, cy)
 	m.mu.RLock()
-	if c := m.chunks[k]; c != nil {
-		m.mu.RUnlock()
+	c := m.chunks[k]
+	m.mu.RUnlock()
+	if c != nil {
 		return c, nil
 	}
-	m.mu.RUnlock()
 
-	m.mu.RLock()
-	full := len(m.chunks) >= MaxLoadedChunks
-	m.mu.RUnlock()
-	if full {
+	m.mu.Lock()
+	if c := m.chunks[k]; c != nil {
+		m.mu.Unlock()
+		return c, nil
+	}
+	if call := m.loading[k]; call != nil { // someone is already reading it: wait for that
+		m.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.c, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if len(m.chunks) >= MaxLoadedChunks {
+		m.mu.Unlock()
 		return nil, ErrTooManyChunks
 	}
+	call := &loadCall{done: make(chan struct{})}
+	m.loading[k] = call
+	m.mu.Unlock()
 
+	// The read is shared with whoever else is waiting, so it must not die with this caller's connection.
+	call.c, call.err = m.loadFromStore(context.WithoutCancel(ctx), cx, cy)
+	m.mu.Lock()
+	delete(m.loading, k)
+	if call.err == nil {
+		m.chunks[k] = call.c
+	}
+	m.mu.Unlock()
+	close(call.done)
+	return call.c, call.err
+}
+
+func (m *Manager) loadFromStore(ctx context.Context, cx, cy int64) (*chunk, error) {
 	rec, ok, err := m.store.LoadChunk(ctx, m.worldID, cx, cy)
 	if err != nil {
 		return nil, err
 	}
-
 	c := &chunk{revealed: make([]byte, BitmapBytes), flags: make([]byte, BitmapBytes), owners: map[int]string{}}
 	if ok {
 		if decoded, err := hex.DecodeString(rec.Revealed); err == nil && len(decoded) == BitmapBytes {
@@ -168,15 +205,44 @@ func (m *Manager) getChunk(ctx context.Context, cx, cy int64) (*chunk, error) {
 		}
 		c.version = rec.Version
 	}
-
-	m.mu.Lock()
-	if existing := m.chunks[k]; existing != nil {
-		m.mu.Unlock()
-		return existing, nil
-	}
-	m.chunks[k] = c
-	m.mu.Unlock()
 	return c, nil
+}
+
+// Prefetch loads the given chunks (up to parallel at a time) so the store reads overlap
+// instead of queueing one after another. Errors are ignored: whoever needs the chunk asks again.
+func (m *Manager) Prefetch(ctx context.Context, coords [][2]int64, parallel int) {
+	sem := make(chan struct{}, max(1, parallel))
+	var wg sync.WaitGroup
+	for _, c := range coords {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(cx, cy int64) {
+			defer func() { <-sem; wg.Done() }()
+			_, _ = m.getChunk(ctx, cx, cy)
+		}(c[0], c[1])
+	}
+	wg.Wait()
+}
+
+// lockChunk loads the chunk first, without holding opMu, and then takes opMu; on success
+// opMu is held and the chunk is still the loaded one (an eviction in between would otherwise
+// leave the caller changing a chunk that is no longer in the map, and that change would be lost).
+func (m *Manager) lockChunk(ctx context.Context, cx, cy int64) (*chunk, error) {
+	k := key(cx, cy)
+	for {
+		c, err := m.getChunk(ctx, cx, cy)
+		if err != nil {
+			return nil, err
+		}
+		m.opMu.Lock()
+		m.mu.RLock()
+		same := m.chunks[k] == c
+		m.mu.RUnlock()
+		if same {
+			return c, nil
+		}
+		m.opMu.Unlock()
+	}
 }
 
 func (m *Manager) Snapshot(ctx context.Context, cx, cy int64) (ChunkSnapshot, error) {
@@ -223,13 +289,12 @@ type FlagResult struct {
 // ToggleFlag places a flag owned by owner, or removes it if owner placed it.
 // Flags from before ownership existed (owner "") can be removed by anyone.
 func (m *Manager) ToggleFlag(ctx context.Context, x, y int64, owner string) (FlagResult, error) {
-	m.opMu.Lock()
-	defer m.opMu.Unlock()
 	cx, cy, idx := toChunk(x, y)
-	c, err := m.getChunk(ctx, cx, cy)
+	c, err := m.lockChunk(ctx, cx, cy) // loads the chunk before taking opMu, which is then held
 	if err != nil {
 		return FlagResult{}, err
 	}
+	defer m.opMu.Unlock()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -255,6 +320,21 @@ func (m *Manager) ToggleFlag(ctx context.Context, x, y int64, owner string) (Fla
 }
 
 func (m *Manager) Reveal(ctx context.Context, startX, startY int64) ([]Cell, error) {
+	// A flood fill reads chunks while holding opMu. Load the ones around the start cell first,
+	// in parallel and outside the lock, so the usual case never waits on the store under it.
+	near := make([][2]int64, 0, 4)
+	seenNear := map[[2]int64]bool{}
+	for dy := int64(-1); dy <= 1; dy++ {
+		for dx := int64(-1); dx <= 1; dx++ {
+			cx, cy, _ := toChunk(startX+dx, startY+dy)
+			if k := [2]int64{cx, cy}; !seenNear[k] {
+				seenNear[k] = true
+				near = append(near, k)
+			}
+		}
+	}
+	m.Prefetch(ctx, near, len(near))
+
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 
