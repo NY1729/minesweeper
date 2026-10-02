@@ -392,8 +392,8 @@ func (s *server) ws(w http.ResponseWriter, r *http.Request) {
 			s.handleSubscribe(r.Context(), peer, msg.Chunks)
 		case "reveal":
 			if delta := s.handleReveal(r.Context(), msg.X, msg.Y, userID); delta != 0 {
-				// Own score updates instantly; the shared ranking follows within ~2s.
-				_ = client.SendJSON(map[string]interface{}{"type": "score", "me": s.userScore(userID)})
+				// Own score updates instantly on every tab/device of this user; the shared ranking follows within ~2s.
+				s.hub.SendToUser(userID, map[string]interface{}{"type": "score", "me": s.userScore(userID)})
 			}
 		case "auth":
 			// The secret stays in the browser; only its hash is ever shown to others.
@@ -403,6 +403,7 @@ func (s *server) ws(w http.ResponseWriter, r *http.Request) {
 			}
 			sum := sha256.Sum256([]byte(msg.Secret))
 			userID = hex.EncodeToString(sum[:8])
+			s.hub.Bind(peer, userID)
 			users, err := s.loadUsers(r.Context(), []string{userID})
 			if err != nil {
 				// Don't reply "no flag yet": the client would overwrite the saved one.

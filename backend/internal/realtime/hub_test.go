@@ -187,3 +187,29 @@ func TestBroadcastEncodesOnceAndRespectsSubscriptions(t *testing.T) {
 		t.Fatalf("broadcast-all missed someone: %d %d", len(in1.got), len(out.got))
 	}
 }
+
+func TestSendToUserReachesEveryConnectionOfThatUserOnly(t *testing.T) {
+	h := NewHub()
+	a1, c1 := newPeer(h)
+	a2, c2 := newPeer(h)
+	b, cb := newPeer(h)
+	h.Bind(a1, "alice")
+	h.Bind(a2, "alice") // same person, second tab
+	h.Bind(b, "bob")
+
+	h.SendToUser("alice", map[string]any{"type": "score", "me": 7})
+	if len(c1.got) != 1 || len(c2.got) != 1 || len(cb.got) != 0 {
+		t.Fatalf("alice's tabs got %d/%d, bob got %d", len(c1.got), len(c2.got), len(cb.got))
+	}
+
+	h.Remove(a1) // that tab closes
+	h.SendToUser("alice", map[string]any{"type": "score", "me": 8})
+	if len(c1.got) != 1 || len(c2.got) != 2 {
+		t.Fatalf("a closed tab must not be sent to: %d %d", len(c1.got), len(c2.got))
+	}
+	h.Remove(a2)
+	h.SendToUser("alice", map[string]any{"type": "score", "me": 9}) // nobody left: no panic
+	if len(h.byUser) != 1 {
+		t.Fatalf("empty users must be forgotten, have %d", len(h.byUser))
+	}
+}

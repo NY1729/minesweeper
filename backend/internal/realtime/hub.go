@@ -33,6 +33,7 @@ type Client interface {
 type Hub struct {
 	mu      sync.RWMutex
 	clients map[*Peer]struct{}
+	byUser  map[string]map[*Peer]struct{} // a person can have several connections (tabs, devices)
 
 	cmu     sync.Mutex
 	pending map[uint64]*cursorChange // cursor changes since the last flush, by connection
@@ -46,6 +47,7 @@ type Peer struct {
 	seq         uint64
 	cursor      *Cursor
 	cursorChunk string
+	userID      string // set by Hub.Bind, guarded by Hub.mu
 }
 
 // cursorChange is everything that happened to one cursor since the last flush.
@@ -61,7 +63,7 @@ type cursorChange struct {
 var peerSeq atomic.Uint64
 
 func NewHub() *Hub {
-	return &Hub{clients: make(map[*Peer]struct{}), pending: make(map[uint64]*cursorChange)}
+	return &Hub{clients: make(map[*Peer]struct{}), byUser: make(map[string]map[*Peer]struct{}), pending: make(map[uint64]*cursorChange)}
 }
 func NewPeer(c Client) *Peer {
 	return &Peer{Client: c, subs: make(map[string]struct{}), seq: peerSeq.Add(1)}
@@ -94,9 +96,46 @@ func (h *Hub) Add(p *Peer) {
 	h.mu.Unlock()
 }
 
+// Bind records which user p is, so SendToUser can reach all of that person's connections.
+func (h *Hub) Bind(p *Peer, userID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if p.userID != "" {
+		return
+	}
+	p.userID = userID
+	if h.byUser[userID] == nil {
+		h.byUser[userID] = make(map[*Peer]struct{})
+	}
+	h.byUser[userID][p] = struct{}{}
+}
+
+// SendToUser sends msg to every connection of the user (encoded once).
+func (h *Hub) SendToUser(userID string, msg interface{}) {
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	h.mu.RLock()
+	peers := make([]*Peer, 0, len(h.byUser[userID]))
+	for p := range h.byUser[userID] {
+		peers = append(peers, p)
+	}
+	h.mu.RUnlock()
+	for _, p := range peers {
+		_ = p.SendBytes(b)
+	}
+}
+
 func (h *Hub) Remove(p *Peer) {
 	h.mu.Lock()
 	delete(h.clients, p)
+	if conns := h.byUser[p.userID]; conns != nil {
+		delete(conns, p)
+		if len(conns) == 0 {
+			delete(h.byUser, p.userID)
+		}
+	}
 	h.mu.Unlock()
 	h.SetCursor(p, "", 0, 0, "", false)
 }
