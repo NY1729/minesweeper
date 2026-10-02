@@ -1,4 +1,4 @@
-# Secrets: Turso token, Cloudflare tunnel token, world seed. Keep only the *.example files.
+# Secrets: Cloudflare tunnel token, world seed (and the old Turso token). Keep only the *.example files.
 .env
 .env.*
 !.env.example
@@ -12,6 +12,10 @@ dist/
 .vite/
 
 # Backend
+# the game database, if one is ever created outside docker
+*.db
+*.db-wal
+*.db-shm
 *.test
 *.out
 /backend/server

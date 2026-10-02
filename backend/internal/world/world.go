@@ -50,8 +50,12 @@ type chunk struct {
 	revealed []byte
 	flags    []byte
 	owners   map[int]string
-	version  int64
-	dirty    bool
+	// values[idx] is the mine count (or MineValue) of every revealed cell. It follows from the
+	// seed, so it is not stored: it is worked out once when the chunk is loaded or a cell is
+	// opened, instead of for every cell on every snapshot sent to every new visitor.
+	values  [CellsPerChunk]uint8
+	version int64
+	dirty   bool
 }
 
 type Manager struct {
@@ -204,6 +208,11 @@ func (m *Manager) loadFromStore(ctx context.Context, cx, cy int64) (*chunk, erro
 			c.owners = map[int]string{}
 		}
 		c.version = rec.Version
+		for idx := 0; idx < CellsPerChunk; idx++ {
+			if bitGet(c.revealed, idx) {
+				c.values[idx] = m.ValueAt(cx*ChunkSize+int64(idx)%ChunkSize, cy*ChunkSize+int64(idx)/ChunkSize)
+			}
+		}
 	}
 	return c, nil
 }
@@ -254,6 +263,7 @@ func (m *Manager) Snapshot(ctx context.Context, cx, cy int64) (ChunkSnapshot, er
 	m.mu.RLock()
 	revealed := append([]byte(nil), c.revealed...)
 	flags := append([]byte(nil), c.flags...)
+	values := c.values
 	owners := make(map[int]string, len(c.owners))
 	for k, v := range c.owners {
 		owners[k] = v
@@ -267,7 +277,7 @@ func (m *Manager) Snapshot(ctx context.Context, cx, cy int64) (ChunkSnapshot, er
 		ly := int64(idx) / ChunkSize
 		x, y := cx*ChunkSize+lx, cy*ChunkSize+ly
 		if bitGet(revealed, idx) {
-			out.Cells = append(out.Cells, Cell{X: x, Y: y, Value: m.ValueAt(x, y)})
+			out.Cells = append(out.Cells, Cell{X: x, Y: y, Value: values[idx]})
 		}
 		if bitGet(flags, idx) {
 			out.Flags = append(out.Flags, Flag{Index: idx, Owner: owners[idx]})
@@ -364,6 +374,7 @@ func (m *Manager) Reveal(ctx context.Context, startX, startY int64) ([]Cell, err
 		}
 		value := m.ValueAt(p.x, p.y)
 		bitSet(c.revealed, idx, true)
+		c.values[idx] = value
 		c.version++
 		c.dirty = true
 		m.mu.Unlock()

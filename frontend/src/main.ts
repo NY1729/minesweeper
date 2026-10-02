@@ -594,14 +594,19 @@ function subscribeVisibleChunks(force = false) {
 
   const chunks: Array<{ x: number; y: number }> = [];
   for (let cy = minCY; cy <= maxCY; cy++) {
-    for (let cx = minCX; cx <= maxCX; cx++) {
-      chunks.push({ x: cx, y: cy });
-      if (chunks.length >= 64) break;
-    }
-    if (chunks.length >= 64) break;
+    for (let cx = minCX; cx <= maxCX; cx++) chunks.push({ x: cx, y: cy });
   }
+  // The server sends the chunks in this order, so ask for the middle of the screen first:
+  // what you look at appears before the edges. (If there were more than the 64 the server
+  // accepts, it is the outer ones that get left out.)
+  const ccx = centerX / chunkSize;
+  const ccy = centerY / chunkSize;
+  const dist = (c: { x: number; y: number }) => (c.x + 0.5 - ccx) ** 2 + (c.y + 0.5 - ccy) ** 2;
+  chunks.sort((a, b) => dist(a) - dist(b));
+  chunks.length = Math.min(chunks.length, 64);
 
-  const signature = chunks.map((c) => `${c.x},${c.y}`).join("|");
+  // The order changes as you move; only a change of the set of chunks needs a new subscription.
+  const signature = chunks.map((c) => `${c.x},${c.y}`).sort().join("|");
   if (!force && signature === lastSubscription) return;
   lastSubscription = signature;
   lastSubscribeAt = Date.now();

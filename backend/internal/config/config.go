@@ -12,7 +12,8 @@ type Config struct {
 	WorldID          string
 	WorldSeed        string
 	MinePermille     uint64
-	TursoDatabaseURL string
+	DatabasePath     string // SQLite file; empty = keep nothing across restarts (development)
+	TursoDatabaseURL string // only read by `-import-turso`, to move old data over once
 	TursoAuthToken   string
 	AllowedOrigins   []string
 	FlushInterval    time.Duration
@@ -42,6 +43,7 @@ func Load() Config {
 		WorldID:          getenv("WORLD_ID", "main"),
 		WorldSeed:        getenv("WORLD_SEED", "change-me-in-production"),
 		MinePermille:     minePermille,
+		DatabasePath:     os.Getenv("DATABASE_PATH"),
 		TursoDatabaseURL: strings.TrimRight(os.Getenv("TURSO_DATABASE_URL"), "/"),
 		TursoAuthToken:   os.Getenv("TURSO_AUTH_TOKEN"),
 		AllowedOrigins:   origins,

@@ -5,18 +5,18 @@
 //	crowded: every player looks at the same area (worst case for broadcasts)
 //
 // Run it next to the backend so the load does not go through Cloudflare (see scripts/loadtest.sh).
-// Against the production database it writes users named "load-N" and chunks near -chunk-base;
+// Against the real database it writes users named "load-N" and chunks near -chunk-base;
 // remove them afterwards with -cleanup (scripts/loadtest-cleanup.sh).
 package main
 
 import (
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"os"
@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	_ "modernc.org/sqlite"
 )
 
 var (
@@ -40,7 +41,8 @@ var (
 	cursor    = flag.Duration("cursor", 200*time.Millisecond, "cursor update interval (0 = off)")
 	actions   = flag.Duration("action", 800*time.Millisecond, "mean time between reveal/flag actions")
 	flagsOnly = flag.Bool("flags-only", false, "only toggle flags (no reveals, so no score changes)")
-	cleanup   = flag.Bool("cleanup", false, "delete the data a previous run left in Turso (users load-0..-cleanup-max, chunks near -chunk-base) and exit; needs TURSO_DATABASE_URL and TURSO_AUTH_TOKEN")
+	cleanup   = flag.Bool("cleanup", false, "delete the data a previous run left in the game database (users load-0..-cleanup-max, chunks near -chunk-base) and exit")
+	dbPath    = flag.String("db", "/data/minesweeper.db", "with -cleanup: the SQLite database file")
 	cleanMax  = flag.Int("cleanup-max", 10000, "with -cleanup: highest player count any earlier run used")
 	spoofIP   = flag.Bool("spoof-ip", false, "send a distinct CF-Connecting-IP per player (only for a backend reached directly; Cloudflare rejects requests carrying that header)")
 	chunkBase = flag.Int64("chunk-base", 0, "shift every player's area by this many chunks in x and y (to test far away from real players)")
@@ -261,7 +263,7 @@ func pct(d []time.Duration, p float64) time.Duration {
 func main() {
 	flag.Parse()
 	if *cleanup {
-		cleanupTurso()
+		cleanupDB()
 		return
 	}
 	stop := make(chan struct{})
@@ -342,77 +344,43 @@ func userID(secret string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// cleanupTurso removes exactly what this tool creates: the test users (by id, derived from
-// the same secrets) and chunks far from the real world (-chunk-base must be large, so a
-// wrong flag can never touch the area real players use).
-func cleanupTurso() {
-	url, token := os.Getenv("TURSO_DATABASE_URL"), os.Getenv("TURSO_AUTH_TOKEN")
-	if url == "" {
-		fmt.Fprintln(os.Stderr, "TURSO_DATABASE_URL is not set")
-		os.Exit(1)
-	}
+// cleanupDB removes exactly what this tool creates in the game database: the test users (by
+// id, derived from the same secrets) and chunks far from the real world (-chunk-base must be
+// large, so a wrong flag can never touch the area real players use).
+func cleanupDB() {
 	if *chunkBase < 100000 {
 		fmt.Fprintln(os.Stderr, "refusing to delete chunks: -chunk-base must be >= 100000 (test data lives far from the real world)")
 		os.Exit(1)
 	}
-	endpoint := strings.TrimRight(strings.Replace(url, "libsql://", "https://", 1), "/") + "/v2/pipeline"
-
-	type arg struct {
-		Type  string `json:"type"`
-		Value string `json:"value"`
+	db, err := sql.Open("sqlite", "file:"+*dbPath+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open database:", err)
+		os.Exit(1)
 	}
-	type stmt struct {
-		SQL  string `json:"sql"`
-		Args []arg  `json:"args,omitempty"`
-	}
-	type request struct {
-		Type string `json:"type"`
-		Stmt *stmt  `json:"stmt"`
-	}
-	run := func(sql string, args ...arg) int64 {
-		body, _ := json.Marshal(map[string]any{"requests": []request{{Type: "execute", Stmt: &stmt{SQL: sql, Args: args}}}})
-		req, _ := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "turso:", err)
-			os.Exit(1)
-		}
-		defer resp.Body.Close()
-		data, _ := io.ReadAll(resp.Body)
-		var out struct {
-			Results []struct {
-				Type     string `json:"type"`
-				Response struct {
-					Result struct {
-						Affected int64 `json:"affected_row_count"`
-					} `json:"result"`
-				} `json:"response"`
-				Error struct {
-					Message string `json:"message"`
-				} `json:"error"`
-			} `json:"results"`
-		}
-		if resp.StatusCode/100 != 2 || json.Unmarshal(data, &out) != nil || len(out.Results) == 0 || out.Results[0].Type != "ok" {
-			fmt.Fprintf(os.Stderr, "turso: HTTP %d: %s\n", resp.StatusCode, strings.TrimSpace(string(data)))
-			os.Exit(1)
-		}
-		return out.Results[0].Response.Result.Affected
-	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
 
 	var users int64
 	for from := 0; from < *cleanMax; from += 500 {
 		to := min(from+500, *cleanMax)
-		var args []arg
-		marks := make([]string, 0, to-from)
+		args := make([]any, 0, to-from)
 		for i := from; i < to; i++ {
-			args = append(args, arg{"text", userID(secretFor(i))})
-			marks = append(marks, "?")
+			args = append(args, userID(secretFor(i)))
 		}
-		users += run("DELETE FROM users WHERE id IN ("+strings.Join(marks, ",")+")", args...)
+		res, err := db.Exec("DELETE FROM users WHERE id IN ("+strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")+")", args...)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "delete users:", err)
+			os.Exit(1)
+		}
+		n, _ := res.RowsAffected()
+		users += n
 	}
-	lo := fmt.Sprint(*chunkBase - 2000) // players are placed within about +-1700 chunks of the base
-	chunks := run("DELETE FROM chunks WHERE chunk_x >= ? AND chunk_y >= ?", arg{"integer", lo}, arg{"integer", lo})
+	lo := *chunkBase - 2000 // players are placed within about +-1700 chunks of the base
+	res, err := db.Exec("DELETE FROM chunks WHERE chunk_x >= ? AND chunk_y >= ?", lo, lo)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "delete chunks:", err)
+		os.Exit(1)
+	}
+	chunks, _ := res.RowsAffected()
 	fmt.Printf("deleted %d test users and %d test chunks\n", users, chunks)
 }

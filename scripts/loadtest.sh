@@ -9,7 +9,7 @@
 #
 # Defaults are chosen for the production database: flags only (no score changes, so the
 # ranking is untouched) in an area far from real players. It still writes test users and
-# chunks to Turso: run scripts/loadtest-cleanup.sh afterwards.
+# chunks to the database: run scripts/loadtest-cleanup.sh afterwards.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -39,4 +39,4 @@ awk '
     mb = (u == "GiB") ? m * 1024 : (u == "KiB") ? m / 1024 : (u == "B") ? m / 1048576 : m + 0
     if (mb > mem) mem = mb }
   END { if (n) printf "backend container: CPU peak %.0f%% avg %.0f%% (100%% = one core) | memory peak %.0f MiB\n", cpu, sum / n, mem }' "$stats"
-echo "now run scripts/loadtest-cleanup.sh to remove the test data from Turso"
+echo "now run scripts/loadtest-cleanup.sh to remove the test data from the database"

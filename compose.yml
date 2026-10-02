@@ -7,6 +7,8 @@ services:
       - ./backend/.env
     expose:
       - "8080"
+    volumes:
+      - data:/data   # the game database (SQLite); survives rebuilds and restarts
     networks:
       - edge
 
@@ -27,3 +29,6 @@ services:
 networks:
   edge:
     driver: bridge
+
+volumes:
+  data:

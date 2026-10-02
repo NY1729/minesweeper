@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"log"
 	"math"
 	"net"
@@ -58,7 +59,7 @@ type server struct {
 
 	usersMu       sync.Mutex
 	users         map[string]*store.User // public id -> profile; Score includes pendingScores
-	pendingScores map[string]int64       // not yet written to Turso
+	pendingScores map[string]int64       // not yet written to the database
 
 	rankMu     sync.Mutex
 	rankTop    []rankEntry // last ranking pushed to clients
@@ -216,11 +217,25 @@ type chunkCoord struct {
 func main() {
 	cfg := config.Load()
 
+	importTurso := flag.Bool("import-turso", false, "copy the users and chunks from the old Turso database into DATABASE_PATH, then exit (needs TURSO_DATABASE_URL and TURSO_AUTH_TOKEN)")
+	flag.Parse()
+
 	var st store.Store = &store.MemoryStore{}
-	if cfg.TursoDatabaseURL != "" {
-		st = store.NewTurso(cfg.TursoDatabaseURL, cfg.TursoAuthToken)
+	if cfg.DatabasePath != "" {
+		db, err := store.OpenSQLite(cfg.DatabasePath)
+		if err != nil {
+			log.Fatalf("open database %s: %v", cfg.DatabasePath, err)
+		}
+		defer db.Close()
+		st = db
+		if *importTurso {
+			runImportTurso(cfg, db)
+			return
+		}
+	} else if *importTurso {
+		log.Fatal("DATABASE_PATH must be set for -import-turso")
 	} else {
-		log.Print("TURSO_DATABASE_URL is empty; using non-persistent memory store")
+		log.Print("DATABASE_PATH is empty; using non-persistent memory store")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -274,7 +289,7 @@ func main() {
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
-	s.flushAll(shutdownCtx)
+	s.flushAll(shutdownCtx) // everything is on disk before the database closes (deferred above)
 	_ = httpServer.Shutdown(shutdownCtx)
 }
 
@@ -551,7 +566,7 @@ func (s *server) handleFlag(ctx context.Context, x, y int64, owner string) {
 	})
 }
 
-// addScore changes a user's score; Turso is updated by the next flush.
+// addScore changes a user's score; the database is updated by the next flush.
 func (s *server) addScore(userID string, delta int64) {
 	s.usersMu.Lock()
 	defer s.usersMu.Unlock()
@@ -606,7 +621,7 @@ func (s *server) pushRanking(ctx context.Context, broadcast bool) {
 	}
 }
 
-// loadUsers returns profiles for known ids, from memory or Turso. Unknown ids are omitted.
+// loadUsers returns profiles for known ids, from memory or the database. Unknown ids are omitted.
 // ponytail: cache never evicts; fine until there are millions of users.
 func (s *server) loadUsers(ctx context.Context, ids []string) (map[string]store.User, error) {
 	out := make(map[string]store.User, len(ids))
