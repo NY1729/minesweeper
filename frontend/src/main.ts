@@ -780,8 +780,54 @@ function resize() {
 
 let lastPointerType = "";
 
+// Two-finger pinch: zoom around the point between the fingers and follow it, like a map.
+const touches = new Map<number, { x: number; y: number }>();
+let pinch: { dist: number; size: number; anchor: { x: number; y: number } } | null = null;
+
+function pinchState() {
+  const [a, b] = [...touches.values()];
+  return { mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, dist: Math.hypot(a.x - b.x, a.y - b.y) || 1 };
+}
+
+function startPinch() {
+  const { mid, dist } = pinchState();
+  pinch = { dist, size: cellSize, anchor: worldFromScreen(mid.x, mid.y) };
+  dragging = false; // the first finger was starting a drag or a tap: neither any more
+  dragMoved = true;
+  clearTimeout(longPressTimer);
+}
+
+function applyPinch() {
+  if (!pinch) return;
+  const { mid, dist } = pinchState();
+  cellSize = Math.min(64, Math.max(minCellSize(), (pinch.size * dist) / pinch.dist));
+  // keep the world point that was between the fingers between them
+  centerX = pinch.anchor.x - (mid.x - canvas.width / devicePixelRatio / 2) / cellSize;
+  centerY = pinch.anchor.y - (mid.y - canvas.height / devicePixelRatio / 2) / cellSize;
+}
+
+// iOS Safari would otherwise zoom the whole page on a pinch.
+document.addEventListener("gesturestart", (e) => e.preventDefault());
+
+// Belt and braces for browsers that ignore user-select on a long press: no selection outside text fields.
+document.addEventListener("selectstart", (e) => {
+  const node = e.target as Node;
+  const el = node instanceof Element ? node : node.parentElement; // a text node reports its parent
+  if (!el?.closest("input, textarea")) e.preventDefault();
+});
+// ... and no context menu (Android) on the board or the buttons.
+document.addEventListener("contextmenu", (e) => {
+  if (!(e.target as Element).closest?.("input, textarea")) e.preventDefault();
+});
+
 canvas.addEventListener("pointerdown", (event) => {
   lastPointerType = event.pointerType;
+  try { canvas.setPointerCapture(event.pointerId); } catch {} // the pointer may already be gone
+  if (event.pointerType === "touch") {
+    touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (touches.size === 2) { startPinch(); return; }
+    if (touches.size > 2) return;
+  }
   if (event.button !== 0) return;
   dragging = true;
   dragMoved = false;
@@ -789,7 +835,6 @@ canvas.addEventListener("pointerdown", (event) => {
   pointerStartY = event.clientY;
   centerStartX = centerX;
   centerStartY = centerY;
-  canvas.setPointerCapture(event.pointerId);
 
   longPressed = false;
   if (event.pointerType === "touch") {
@@ -804,6 +849,15 @@ canvas.addEventListener("pointerdown", (event) => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
+  if (event.pointerType === "touch" && touches.has(event.pointerId)) {
+    touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pinch) {
+      applyPinch();
+      draw();
+      subscribeVisibleChunks();
+      return;
+    }
+  }
   const cell = cellFromScreen(event.clientX, event.clientY);
   pointer = { x: event.clientX, y: event.clientY };
   if (event.pointerType === "mouse") {
@@ -812,7 +866,7 @@ canvas.addEventListener("pointermove", (event) => {
   }
 
   if (!dragging) {
-    if (hover?.x !== cell.x || hover?.y !== cell.y) {
+    if (event.pointerType !== "touch" && (hover?.x !== cell.x || hover?.y !== cell.y)) {
       hover = cell;
       draw();
     }
@@ -834,9 +888,16 @@ canvas.addEventListener("pointermove", (event) => {
 });
 
 canvas.addEventListener("pointerup", (event) => {
+  if (event.pointerType === "touch") {
+    touches.delete(event.pointerId);
+    if (pinch) {
+      if (touches.size < 2) pinch = null; // a finger left: the other one must not start a drag or a tap
+      return;
+    }
+  }
   if (!dragging) return;
   dragging = false;
-  canvas.releasePointerCapture(event.pointerId);
+  try { canvas.releasePointerCapture(event.pointerId); } catch {}
   clearTimeout(longPressTimer);
 
   if (!dragMoved && !longPressed) {
@@ -846,6 +907,8 @@ canvas.addEventListener("pointerup", (event) => {
 });
 
 canvas.addEventListener("pointercancel", () => {
+  touches.clear();
+  pinch = null;
   dragging = false;
   clearTimeout(longPressTimer);
 });

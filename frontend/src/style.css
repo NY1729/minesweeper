@@ -6,6 +6,17 @@
 }
 
 * { box-sizing: border-box; }
+
+/* A long press places a flag. Keep the browser from turning it into a text/image selection,
+   the magnifier or a callout menu. The name field in the editor stays selectable. */
+html, body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+input { -webkit-user-select: text; user-select: text; }
+img, canvas { -webkit-user-drag: none; -webkit-touch-callout: none; }
 html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #eef1f7; }
 
 #board {
