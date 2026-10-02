@@ -514,6 +514,8 @@ function connect() {
       for (const cell of msg.cells) {
         revealed.set(key(cell.x, cell.y), cell.value);
         flags.delete(key(cell.x, cell.y));
+        pendingOpen.delete(key(cell.x, cell.y));
+        pendingFlag.delete(key(cell.x, cell.y));
       }
       draw();
       return;
@@ -521,6 +523,7 @@ function connect() {
 
     if (msg.type === "flag") {
       const k = key(msg.x, msg.y);
+      pendingFlag.delete(k);
       if (msg.on) {
         flags.set(k, msg.owner);
         wantUser(msg.owner);
@@ -559,6 +562,44 @@ function applyChunk(chunk: ChunkSnapshot) {
     flags.set(key(baseX + lx, baseY + ly), f.o);
     wantUser(f.o);
   }
+}
+
+// Instant feedback. From Japan the server is ~75 ms away, so waiting for its answer makes every
+// click feel late. A click shows its likely result at once and the server's message then
+// replaces it (or, if the server never answers, the guess is taken back after PENDING_MS).
+const PENDING_MS = 1500;
+const pendingOpen = new Set<number>(); // cells clicked, waiting to be shown as opened
+const pendingFlag = new Map<number, string | undefined>(); // cell -> flag owner before our guess
+
+function openCell(x: number, y: number) {
+  const k = key(x, y);
+  if (!revealed.has(k) && !flags.has(k)) { // an opened or flagged cell ignores the click on the server too
+    pendingOpen.add(k);
+    window.setTimeout(() => { if (pendingOpen.delete(k)) draw(); }, PENDING_MS);
+    draw();
+  }
+  send({ type: "reveal", x, y });
+}
+
+function toggleFlag(x: number, y: number) {
+  const k = key(x, y);
+  const owner = flags.get(k);
+  const mine = owner === undefined || owner === "" || owner === myId; // the server only lets the owner remove a flag
+  if (myId && !revealed.has(k) && mine) {
+    if (!pendingFlag.has(k)) pendingFlag.set(k, owner);
+    if (owner === undefined) flags.set(k, myId);
+    else flags.delete(k);
+    window.setTimeout(() => {
+      if (!pendingFlag.has(k)) return; // the server answered
+      const before = pendingFlag.get(k);
+      pendingFlag.delete(k);
+      if (before === undefined) flags.delete(k);
+      else flags.set(k, before);
+      draw();
+    }, PENDING_MS);
+    draw();
+  }
+  send({ type: "flag", x, y });
 }
 
 function send(message: unknown) {
@@ -684,16 +725,17 @@ function render() {
       const k = key(x, y);
       const value = revealed.get(k);
       const owner = flags.get(k);
+      const opening = value === undefined && pendingOpen.has(k);
 
       // A flag marks its cell in the owner's color (same color as their hover cell).
       const mark = owner === undefined ? "" : owner ? cursorColor(owner) : "#8a90a0";
 
       if (coarse) {
-        if (value === undefined && owner === undefined) continue; // background already unrevealed
-        ctx.fillStyle = mark || (value === 9 ? "#ffd6dc" : "#ffffff");
+        if (value === undefined && owner === undefined && !opening) continue; // background already unrevealed
+        ctx.fillStyle = mark || (value === 9 ? "#ffd6dc" : opening ? "#eef4ff" : "#ffffff");
         ctx.fillRect(px, py, cellSize + 0.5, cellSize + 0.5);
       } else {
-        ctx.fillStyle = value === undefined ? "#d9e0ec" : value === 9 ? "#ffd6dc" : "#ffffff";
+        ctx.fillStyle = value === undefined ? (opening ? "#eef4ff" : "#d9e0ec") : value === 9 ? "#ffd6dc" : "#ffffff";
         ctx.fillRect(px + 1, py + 1, cellSize - 2, cellSize - 2);
         if (mark) {
           ctx.fillStyle = mark;
@@ -863,7 +905,7 @@ canvas.addEventListener("pointerdown", (event) => {
       longPressed = true;
       navigator.vibrate?.(20);
       const cell = cellFromScreen(pointerStartX, pointerStartY);
-      send({ type: "flag", x: cell.x, y: cell.y });
+      toggleFlag(cell.x, cell.y);
     }, 450);
   }
 });
@@ -922,7 +964,7 @@ canvas.addEventListener("pointerup", (event) => {
 
   if (!dragMoved && !longPressed) {
     const cell = cellFromScreen(event.clientX, event.clientY);
-    send({ type: "reveal", x: cell.x, y: cell.y });
+    openCell(cell.x, cell.y);
   }
 });
 
@@ -938,7 +980,7 @@ canvas.addEventListener("contextmenu", (event) => {
   // Touch long-press also fires contextmenu; the long-press timer already flagged it.
   if (lastPointerType === "touch") return;
   const cell = cellFromScreen(event.clientX, event.clientY);
-  send({ type: "flag", x: cell.x, y: cell.y });
+  toggleFlag(cell.x, cell.y);
 });
 
 canvas.addEventListener("wheel", (event) => {
