@@ -19,7 +19,7 @@ type ServerMessage =
   | { type: "users"; users: Record<string, { p: string; n: string }> }
   | { type: "ranking"; top: { id: string; n: string; score: number }[] }
   | { type: "cursors"; cursors: { s: number; id: string; x: number; y: number }[] }
-  | { type: "cursor"; s: number; id?: string; x?: number; y?: number; hide?: boolean }
+  | { type: "cursorbatch"; set: { s: number; id: string; x: number; y: number }[]; hide: number[] }
   | { type: "pong" };
 
 const canvas = document.querySelector<HTMLCanvasElement>("#board")!;
@@ -463,14 +463,15 @@ function connect() {
       return;
     }
 
-    // One player's selected cell changed (or they left / moved out of view).
-    if (msg.type === "cursor") {
-      if (msg.hide) cursors.delete(msg.s);
-      else {
-        cursors.set(msg.s, { id: msg.id!, x: msg.x!, y: msg.y! });
-        wantUser(msg.id!);
-        requestPendingUsers();
+    // Selected cells that changed since the last batch (the server sends up to 10 batches a
+    // second): `set` = new positions, `hide` = players who left or moved out of view.
+    if (msg.type === "cursorbatch") {
+      for (const c of msg.set) {
+        cursors.set(c.s, { id: c.id, x: c.x, y: c.y });
+        wantUser(c.id);
       }
+      for (const s of msg.hide) cursors.delete(s);
+      requestPendingUsers();
       draw();
       return;
     }

@@ -41,6 +41,14 @@ func (c *wsClient) SendJSON(v interface{}) error {
 	return c.conn.WriteJSON(v)
 }
 
+// SendBytes sends an already encoded JSON message (used by broadcasts, which encode once).
+func (c *wsClient) SendBytes(b []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return c.conn.WriteMessage(websocket.TextMessage, b)
+}
+
 type server struct {
 	cfg      config.Config
 	world    *world.Manager
@@ -244,6 +252,7 @@ func main() {
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go s.flushLoop(rootCtx)
+	go s.hub.CursorLoop(rootCtx, 100*time.Millisecond) // cursor changes go out in batches, 10 times a second
 
 	go func() {
 		log.Printf("minesweeper server listening on %s", cfg.Addr)
