@@ -37,9 +37,14 @@ while True:
         print(time.strftime("%H:%M:%S"), "query failed:", e)
         time.sleep(10)
         continue
+    if n == 0:
+        print(f"{time.strftime('%H:%M:%S')}  chunks=0  no rows match, so nothing is being written there")
+        time.sleep(10)
+        continue
+    first = prev is None
     quiet = quiet + 1 if prev == (n, newest) else 0
     prev = (n, newest)
-    verdict = "STOPPED (nothing changed for 3 checks)" if quiet >= 3 else "still writing" if quiet == 0 else "no change yet..."
+    verdict = "first check" if first else "STOPPED (nothing changed for 3 checks)" if quiet >= 3 else "still writing" if quiet == 0 else "no change yet..."
     print(f"{time.strftime('%H:%M:%S')}  chunks={n}  newest write={now - newest}s ago  {verdict}")
     time.sleep(10)
 PY
