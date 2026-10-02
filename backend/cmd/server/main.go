@@ -67,11 +67,18 @@ type server struct {
 
 	rates rateLimits
 
+	pingEvery, readTimeout time.Duration
+
 	connsMu sync.Mutex
 	conns   map[string]int // client ip -> open websockets
 }
 
-const maxConnsPerIP = 5
+// A browser answers pings by itself. A peer that stays silent for readTimeout is gone (phone
+// asleep, network switched): drop it, or it keeps holding a connection slot of its IP for a long time.
+const (
+	defaultPingEvery   = 25 * time.Second
+	defaultReadTimeout = 70 * time.Second
+)
 
 // bucket is a token bucket: rate tokens/sec, holding at most burst.
 // Only touched by its connection's read loop, so no locking.
@@ -231,6 +238,8 @@ func main() {
 		users:         make(map[string]*store.User),
 		pendingScores: make(map[string]int64),
 		conns:         make(map[string]int),
+		pingEvery:     defaultPingEvery,
+		readTimeout:   defaultReadTimeout,
 	}
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  4096,
@@ -317,7 +326,7 @@ func contains(items []string, target string) bool {
 func (s *server) ws(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	s.connsMu.Lock()
-	if s.conns[ip] >= maxConnsPerIP {
+	if s.conns[ip] >= s.cfg.MaxConnsPerIP {
 		s.connsMu.Unlock()
 		http.Error(w, "too many connections", http.StatusTooManyRequests)
 		return
@@ -350,6 +359,25 @@ func (s *server) ws(w http.ResponseWriter, r *http.Request) {
 	})
 
 	conn.SetReadLimit(64 << 10)
+	conn.SetReadDeadline(time.Now().Add(s.readTimeout))
+	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(s.readTimeout)) })
+	stopPing := make(chan struct{})
+	defer close(stopPing)
+	go func() {
+		t := time.NewTicker(s.pingEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopPing:
+				return
+			case <-t.C:
+				// WriteControl is safe to call alongside the other writers
+				if conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)) != nil {
+					return
+				}
+			}
+		}
+	}()
 	userID := ""
 
 	// Over-limit messages are dropped; 100 drops within 10s means a bot, so disconnect.
@@ -372,6 +400,7 @@ func (s *server) ws(w http.ResponseWriter, r *http.Request) {
 		if err := conn.ReadJSON(&msg); err != nil {
 			return
 		}
+		conn.SetReadDeadline(time.Now().Add(s.readTimeout))
 		now := time.Now()
 		needsAuth := msg.Type == "reveal" || msg.Type == "flag" || msg.Type == "setProfile"
 		if needsAuth && userID == "" {

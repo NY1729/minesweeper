@@ -402,12 +402,27 @@ function wsUrl(): string {
   return `${scheme}//${location.host}/api/ws`;
 }
 
+// Say so when the server cannot be reached (a silent blank board looks like a dead game).
+// Shown only after a few seconds without a connection, and hidden again once connected.
+const offlineEl = document.querySelector<HTMLElement>("#offline")!;
+let offlineTimer: number | undefined;
+function offlineSoon() {
+  if (offlineTimer === undefined) offlineTimer = window.setTimeout(() => (offlineEl.hidden = false), 2500);
+}
+function online() {
+  clearTimeout(offlineTimer);
+  offlineTimer = undefined;
+  offlineEl.hidden = true;
+}
+
 function connect() {
   clearTimeout(reconnectTimer);
+  offlineSoon();
 
   socket = new WebSocket(wsUrl());
 
   socket.addEventListener("open", () => {
+    online();
     send({ type: "auth", secret });
     send({ type: "ranking" });
     sentCursor = "";

@@ -16,6 +16,7 @@ type Config struct {
 	TursoAuthToken   string
 	AllowedOrigins   []string
 	FlushInterval    time.Duration
+	MaxConnsPerIP    int // simultaneous websockets from one client IP (people behind one NAT share it)
 }
 
 func Load() Config {
@@ -27,6 +28,10 @@ func Load() Config {
 	flushSeconds := 2
 	if v, err := strconv.Atoi(getenv("FLUSH_INTERVAL_SECONDS", "2")); err == nil && v > 0 {
 		flushSeconds = v
+	}
+	maxConns := 20
+	if v, err := strconv.Atoi(getenv("MAX_CONNS_PER_IP", "20")); err == nil && v > 0 {
+		maxConns = v
 	}
 	origins := strings.Split(getenv("ALLOWED_ORIGINS", "*"), ",")
 	for i := range origins {
@@ -41,6 +46,7 @@ func Load() Config {
 		TursoAuthToken:   os.Getenv("TURSO_AUTH_TOKEN"),
 		AllowedOrigins:   origins,
 		FlushInterval:    time.Duration(flushSeconds) * time.Second,
+		MaxConnsPerIP:    maxConns,
 	}
 }
 

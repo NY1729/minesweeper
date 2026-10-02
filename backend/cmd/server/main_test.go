@@ -3,10 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
+	"minesweeper/backend/internal/config"
+	"minesweeper/backend/internal/realtime"
 
 	"minesweeper/backend/internal/store"
 	"minesweeper/backend/internal/world"
@@ -160,5 +166,98 @@ func TestFailedFlushRetriesOnlyItsBatchAndLosesNothing(t *testing.T) {
 	}
 	if len(seen) != 120 || s.world.HasDirty() {
 		t.Fatalf("after recovery saved %d of 120, dirty=%v", len(seen), s.world.HasDirty())
+	}
+}
+
+func wsTestServer(t *testing.T, maxConns int) (*server, string) {
+	t.Helper()
+	s := &server{
+		pingEvery:     defaultPingEvery,
+		readTimeout:   defaultReadTimeout,
+		cfg:           config.Config{AllowedOrigins: []string{"*"}, MaxConnsPerIP: maxConns},
+		world:         world.NewManager("t", "seed", 100, &store.MemoryStore{}),
+		store:         &store.MemoryStore{},
+		hub:           realtime.NewHub(),
+		users:         map[string]*store.User{},
+		pendingScores: map[string]int64{},
+		conns:         map[string]int{},
+	}
+	s.upgrader = websocket.Upgrader{CheckOrigin: s.originAllowed}
+	ts := httptest.NewServer(http.HandlerFunc(s.ws))
+	t.Cleanup(ts.Close)
+	return s, "ws" + strings.TrimPrefix(ts.URL, "http")
+}
+
+func openConns(s *server) int {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	n := 0
+	for _, c := range s.conns {
+		n += c
+	}
+	return n
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestConnectionLimitPerIPIsConfigurable(t *testing.T) {
+	s, url := wsTestServer(t, 3)
+	var conns []*websocket.Conn
+	for i := 0; i < 3; i++ {
+		c, _, err := websocket.DefaultDialer.Dial(url, nil)
+		if err != nil {
+			t.Fatalf("connection %d: %v", i+1, err)
+		}
+		conns = append(conns, c)
+	}
+	if _, resp, err := websocket.DefaultDialer.Dial(url, nil); err == nil || resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("the 4th connection must be refused with 429, got err=%v resp=%v", err, resp)
+	}
+	conns[0].Close()
+	waitFor(t, "the slot of a closed connection to free up", func() bool { return openConns(s) == 2 })
+	if c, _, err := websocket.DefaultDialer.Dial(url, nil); err != nil {
+		t.Fatalf("a freed slot must be usable: %v", err)
+	} else {
+		c.Close()
+	}
+}
+
+// A peer that vanished without closing (phone asleep, network switched) must not keep its
+// IP's connection slot forever; a live peer that answers pings must be left alone.
+func TestSilentPeerIsDroppedLivePeerIsKept(t *testing.T) {
+	s, url := wsTestServer(t, 10)
+	s.pingEvery, s.readTimeout = 40*time.Millisecond, 300*time.Millisecond // set before any connection exists
+	live, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Close()
+	go func() { // reading is what makes the client library answer pings
+		for {
+			if _, _, err := live.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+	silent, _, err := websocket.DefaultDialer.Dial(url, nil) // never reads: never answers pings
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	waitFor(t, "both connections to register", func() bool { return openConns(s) == 2 })
+
+	waitFor(t, "the silent peer to be dropped", func() bool { return openConns(s) == 1 })
+	time.Sleep(2 * s.readTimeout) // the live peer survives several timeouts' worth of time
+	if openConns(s) != 1 {
+		t.Fatalf("the live peer was dropped too: %d connections left", openConns(s))
 	}
 }
