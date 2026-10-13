@@ -33,7 +33,7 @@ import (
 var (
 	url       = flag.String("url", "ws://localhost:18080/api/ws", "websocket url")
 	health    = flag.String("health", "http://localhost:18080/api/health", "health url")
-	origin    = flag.String("origin", "https://mine.alt0.org", "Origin header")
+	origin    = flag.String("origin", "https://mine.a1to.org", "Origin header")
 	n         = flag.Int("n", 100, "players")
 	dur       = flag.Duration("dur", 30*time.Second, "steady-state duration after ramp")
 	ramp      = flag.Int("ramp", 200, "new connections per second")
